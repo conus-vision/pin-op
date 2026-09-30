@@ -152,8 +152,19 @@ export class FakeChromiumReadOnlyStylesPane implements
     return this.options.resolveOrigin(ruleRef as string);
   }
 
-  public openOrigin(ruleRef: unknown): void {
-    this.options.openOrigin(ruleRef as string);
+  public openOrigin(ruleRef: unknown, declaration?: unknown): void {
+    if (declaration === undefined) {
+      this.options.openOrigin(ruleRef as string);
+    } else {
+      this.options.openOrigin(
+        ruleRef as string,
+        declaration as { property: string; occurrence: number },
+      );
+    }
+  }
+
+  public previewMediaQuery(conditionText: unknown): void {
+    this.options.previewMediaQuery?.(conditionText as string);
   }
 
   public report(error: unknown): void {

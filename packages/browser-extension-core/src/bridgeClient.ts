@@ -365,6 +365,9 @@ export class BrowserBridgeClient {
         inspectMessageId: safeInput.inspectMessageId,
         rulesGeneration: safeInput.rulesGeneration,
         openAuthorityId: safeInput.openAuthorityId,
+        ...(safeInput.declaration
+          ? { declaration: safeInput.declaration }
+          : {}),
         metadata: {},
       });
       message = parsed.success ? parsed.data : undefined;
@@ -979,23 +982,25 @@ function snapshotSourceOpenInput(value: unknown): SourceOpenInput | undefined {
 }
 
 function snapshotRulesOpenInput(value: unknown): RulesOpenInput | undefined {
-  const record = snapshotExactDataRecord(value, [
-    "inspectMessageId",
-    "rulesGeneration",
-    "openAuthorityId",
-  ]);
+  const keys = ["inspectMessageId", "rulesGeneration", "openAuthorityId"];
+  const record = snapshotExactDataRecord(value, keys) ??
+    snapshotExactDataRecord(value, [...keys, "declaration"]);
   if (!record) return undefined;
   const parsed = parsePanelRulesOpenCommand({
     type: "pin-op.rules.open",
     inspectMessageId: record.inspectMessageId,
     rulesGeneration: record.rulesGeneration,
     openAuthorityId: record.openAuthorityId,
+    ...(Object.hasOwn(record, "declaration")
+      ? { declaration: record.declaration }
+      : {}),
   });
   return parsed
     ? {
         inspectMessageId: parsed.inspectMessageId,
         rulesGeneration: parsed.rulesGeneration,
         openAuthorityId: parsed.openAuthorityId,
+        ...(parsed.declaration ? { declaration: parsed.declaration } : {}),
       }
     : undefined;
 }

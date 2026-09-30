@@ -218,6 +218,8 @@ import * as Chromium from './runtime.js';
 
 const mount = document.querySelector('#mount');
 const opened = [];
+const openedDeclarations = [];
+const mediaPreviews = [];
 const errors = [];
 
 const pane = Chromium.chromiumReadOnlyStylesRuntime.createPane({
@@ -235,7 +237,10 @@ const pane = Chromium.chromiumReadOnlyStylesRuntime.createPane({
     'rule:inherited-omitted': {label: 'omitted.scss', languageId: 'scss', startLine: 44, startColumn: 1,
       confidence: 'sourcemap', clickable: true},
   })[ruleRef],
-  openOrigin: ruleRef => opened.push(ruleRef),
+  openOrigin: (ruleRef, declaration) => declaration
+    ? openedDeclarations.push(ruleRef + ' ' + declaration.property + '#' + declaration.occurrence)
+    : opened.push(ruleRef),
+  previewMediaQuery: conditionText => mediaPreviews.push(conditionText),
   onError: error => errors.push(String(error?.stack || error)),
 });
 
@@ -430,6 +435,19 @@ for (const [shorthand, expectedLonghands] of Object.entries(shorthandExpectation
     deepQueryAll(pane.element, '.webkit-css-property').some(node => node.textContent === name)),
   'native ' + shorthand + ' longhands');
 }
+// A longhand opens the shorthand the rule wrote, a row "Show all" revealed opens
+// its own declaration, and a rule with no openable origin opens nothing.
+const clickRow = name => deepQueryAll(pane.element, '.webkit-css-property')
+  .find(node => node.textContent === name)?.closest('li')?.querySelector('.value')?.click();
+clickRow('margin-top');
+clickRow('--property-150');
+clickRow('opacity');
+const declarationOpenEvidence = {
+  longhandOpensShorthand: openedDeclarations[0] === 'rule:scss margin#0',
+  revealedRowOpens: openedDeclarations[1] === 'rule:scss --property-150#0',
+  unlinkedRuleInert: openedDeclarations.length === 2,
+  originOpensUnchanged: opened.length === 1,
+};
 const shorthandCoverage = Object.fromEntries(Object.entries(shorthandExpectations).map(([shorthand, expected]) => [
   shorthand,
   expected.every(name => deepQueryAll(pane.element, '.webkit-css-property').some(node => node.textContent === name)),
@@ -446,6 +464,10 @@ const contextOrder = [
   layerText === 'Layer theme' || layerText === 'Layertheme' ? '@layer theme {' : layerText,
   ...contextOrderWithoutLayer.slice(2),
 ];
+for (const host of contextHosts) host.shadowRoot?.querySelector('.query-text')?.click();
+const mediaPreviewEvidence = {
+  onlyMediaPreviews: JSON.stringify(mediaPreviews) === JSON.stringify(['(min-width: 1px)']),
+};
 const origins = deepQueryAll(pane.element, '.styles-section-subtitle').map(node => node.textContent?.trim()).filter(Boolean);
 const inheritedLabel = deepQuery(pane.element, '.pin-op-inherited-node-label')?.textContent;
 const root = document.documentElement;
@@ -573,6 +595,8 @@ const value = {
   originPresentation,
   shorthandLonghands,
   shorthandCoverage,
+  declarationOpenEvidence,
+  mediaPreviewEvidence,
   contextOrder,
   inheritedLabel,
   lightTokens,
@@ -629,6 +653,8 @@ if (!value.stable || !value.directChild || !value.hasNativeSection || !value.has
     !Object.values(value.previewedPresentation).every(Boolean) ||
     !Object.values(value.originPresentation).every(Boolean) ||
     !Object.values(value.shorthandCoverage).every(Boolean) || JSON.stringify(value.contextOrder) !== JSON.stringify(expectedContextOrder) ||
+    !Object.values(value.declarationOpenEvidence).every(Boolean) ||
+    !Object.values(value.mediaPreviewEvidence).every(Boolean) ||
     value.inheritedLabel !== 'body.site-shell' || !value.lightTokens.sysColor || !value.lightTokens.appColor ||
     value.lightTokens.size !== '12px' || value.lightTokens.sysColor === value.darkTokens.sysColor ||
     value.lightTokens.appColor === value.darkTokens.appColor || !Object.values(value.visibleIcons).every(Boolean) ||

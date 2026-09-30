@@ -30,6 +30,32 @@ describe("RulesSourcesController", () => {
     });
   });
 
+  it("carries a clicked declaration with the rule's opaque open authority", () => {
+    const sent = vi.fn();
+    const controller = new RulesSourcesController(sent);
+    controller.beginInspect("inspect-1", new Set(["rule-1"]));
+    controller.accept(rulesSources());
+
+    controller.open("rule-1", { property: "margin", occurrence: 1 });
+    controller.open("rule-1", { property: "margin: 0", occurrence: 0 });
+
+    expect(sent.mock.calls).toEqual([
+      [{
+        type: "pin-op.rules.open",
+        inspectMessageId: "inspect-1",
+        rulesGeneration: 1,
+        openAuthorityId: "authority-1",
+        declaration: { property: "margin", occurrence: 1 },
+      }],
+      [{
+        type: "pin-op.rules.open",
+        inspectMessageId: "inspect-1",
+        rulesGeneration: 1,
+        openAuthorityId: "authority-1",
+      }],
+    ]);
+  });
+
   it("defensively copies expected refs and accepts one complete subset publication", () => {
     const expected = new Set(["rule-1", "rule-2"]);
     const controller = new RulesSourcesController(vi.fn());

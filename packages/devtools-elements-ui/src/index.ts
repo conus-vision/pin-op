@@ -28,6 +28,7 @@ export type {
   RulesDiagnosticSnapshot,
   RulesPresentationSnapshot,
   RulesPresentationState,
+  RuleOriginDeclaration,
   SourceLinkDelegate,
   TreeDataSource,
   TreePresentationSnapshot,

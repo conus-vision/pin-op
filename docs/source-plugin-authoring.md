@@ -4,7 +4,7 @@ Source plugins connect runtime facts from a browser selection to ranges in the
 active VS Code document. A plugin is a separately installed VS Code extension;
 Pin-op never loads plugin code or packages from the inspected workspace.
 
-CSS, SCSS, and PHP ship as production implementations today. The public API is
+CSS, SCSS, PHP, and JavaScript ship as production implementations today. The public API is
 intentionally general enough for framework and template integrations.
 
 This plugin API remains active-document-only. It supplies highlighting and the
@@ -480,6 +480,39 @@ matches, and only the literal half of a `class` attribute is compared.
 
 The provider mints no cross-file authority. It resolves only the active
 document, exactly like the CSS and SCSS providers.
+
+## Built-In JavaScript Provider
+
+`pin-op.javascript` resolves the active `javascript`, `javascriptreact`,
+`typescript`, or `typescriptreact` file document from the built-in
+`dom-attribute` facts. A script does not render an element the way a template
+does; it refers to one, so the provider lists the places that do:
+
+- string and template literals that parse as a selector list, compared by each
+  selector's subject compound -- `.card .title` names a `.title`, not a `.card`;
+- `getElementById` and `id` assignments, properties and comparisons;
+- `classList.add`/`remove`/`toggle`/`contains`/`replace`,
+  `getElementsByClassName`, jQuery's class methods, and `className`/`class`
+  assignments and properties, each branch of a conditional value an
+  alternative;
+- `dataset` members, `*Attribute` calls, jQuery `.attr` and `.data`, and
+  `*ByTestId` queries;
+- JSX opening tags, whose tag and literal attributes must all agree, and markup
+  written into string and template literals, read by the PHP markup scanner.
+
+Comments and regular expressions are skipped, and nothing a `${...}`
+substitution produces is compared. Containment runs literal into element, as
+for PHP: every id, class, and compared attribute value a literal writes must
+hold on the element, which may carry more; a literal the element contradicts is
+ruled out, and a tag alone is never evidence. A class a script adds later -- an
+`is-open` the element does not carry yet -- therefore matches only once the
+element has it. References rank by id, then attribute, then class evidence,
+then by how much of the literal matched; each target lists at most eight, in
+document order, all `heuristic`, with `source`/`matches` as their presentation
+category. Documents are scanned up to 1 MiB in linear time.
+
+The provider mints no cross-file authority and resolves only the active
+document.
 
 ## Built-In DOM Attribute Facts
 

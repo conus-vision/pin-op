@@ -140,7 +140,7 @@ test("artifact verifier rejects a directory missing required release artifacts",
     assert.equal(result.status, 1);
     assert.match(
       result.stderr,
-      /Missing required release artifacts: .*pin-op-vscode-0\.4\.2\.vsix/,
+      /Missing required release artifacts: .*pin-op-vscode-0\.5\.0\.vsix/,
     );
   } finally {
     await rm(directory, { recursive: true, force: true });

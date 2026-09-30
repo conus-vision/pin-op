@@ -59,11 +59,17 @@ interface OriginDecoration {
   readonly state?: 'pending'|'stale'|'incompatible';
 }
 
+interface OriginDeclaration {
+  readonly property: string;
+  readonly occurrence: number;
+}
+
 interface PaneOptions {
   readonly document: Document;
   readonly mount: HTMLElement;
   readonly resolveOrigin: (ruleRef: string) => OriginDecoration|undefined;
-  readonly openOrigin: (ruleRef: string) => void;
+  readonly openOrigin: (ruleRef: string, declaration?: OriginDeclaration) => void;
+  readonly previewMediaQuery?: (conditionText: string) => void;
   readonly onError: (error: unknown) => void;
 }
 
@@ -73,6 +79,25 @@ interface RenderedModel {
   readonly node: object;
   readonly ruleRefByStyle: ReadonlyMap<object, string>;
   readonly ruleByRef: ReadonlyMap<string, RuleSnapshot>;
+  readonly declarationByProperty: WeakMap<object, OriginDeclaration>;
+}
+
+interface PropertyTreeElement {
+  readonly property?: object;
+  readonly listItemElement?: HTMLElement;
+  children(): readonly PropertyTreeElement[];
+}
+
+interface PropertiesSection {
+  style(): object;
+  readonly propertiesTreeOutline?: {
+    readonly contentElement?: HTMLElement;
+    rootElement(): PropertyTreeElement;
+  };
+}
+
+interface ReadOnlyCSSQueryElement extends HTMLElement {
+  readonly data?: {readonly queryPrefix: string; readonly queryText: string};
 }
 
 interface MutableComputedStyleModel {
@@ -290,9 +315,73 @@ class ChromiumReadOnlyStylesPane {
           this.#options.openOrigin(ruleRef);
         }, {signal: originController.signal});
         subtitle.replaceChildren(button);
+        if (section) this.#decorateDeclarations(rendered, section, ruleRef, originController.signal);
       } else {
         subtitle.replaceChildren(this.#options.document.createTextNode(label));
       }
+    }
+    this.#decorateMediaQueries(originController.signal);
+  }
+
+  /**
+   * Makes each declaration of a rule whose source can be opened open it at that
+   * declaration's value, so the value can be edited straight away instead of
+   * being looked for inside the rule. Longhands shown under a shorthand open the
+   * shorthand the stylesheet wrote. The click is resolved against the outline
+   * when it happens, because "Show all" and a disclosure triangle create rows
+   * after the section was decorated.
+   */
+  #decorateDeclarations(
+      rendered: RenderedModel, section: object, ruleRef: string, signal: AbortSignal): void {
+    const outline = (section as PropertiesSection).propertiesTreeOutline;
+    const list = outline?.contentElement;
+    if (!outline || !list) return;
+    adoptOpenableDeclarationStyles(list);
+    list.classList.add(OPENABLE_DECLARATIONS_CLASS);
+    list.title = 'Click a declaration to open its value in the IDE';
+    list.addEventListener('click', event => {
+      if (event.defaultPrevented || this.#options.document.getSelection()?.isCollapsed === false) return;
+      const declaration = clickedDeclaration(outline.rootElement(), rendered, event.composedPath());
+      if (!declaration) return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.#options.openOrigin(ruleRef, declaration);
+    }, {signal});
+    signal.addEventListener('abort', () => {
+      list.classList.remove(OPENABLE_DECLARATIONS_CLASS);
+      list.removeAttribute('title');
+    }, {once: true});
+  }
+
+  /**
+   * Makes an `@media` condition that names a viewport size show the page at that
+   * size, so the rules it guards can be seen applying.
+   */
+  #decorateMediaQueries(signal: AbortSignal): void {
+    const previewMediaQuery = this.#options.previewMediaQuery;
+    if (!previewMediaQuery) return;
+    for (const query of this.#pane.contentElement.querySelectorAll<ReadOnlyCSSQueryElement>(
+             '.styles-section pin-op-readonly-css-query')) {
+      const data = query.data;
+      const text = query.shadowRoot?.querySelector<HTMLElement>('.query-text');
+      if (!data || !text || data.queryPrefix !== '@media' || NEGATED_MEDIA_QUERY.test(data.queryText) ||
+          !VIEWPORT_MEDIA_FEATURE.test(data.queryText)) {
+        continue;
+      }
+      const conditionText = data.queryText;
+      text.title = 'Resize the page to this size';
+      text.style.cursor = 'pointer';
+      text.style.textDecoration = 'underline dotted';
+      text.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        previewMediaQuery(conditionText);
+      }, {signal});
+      signal.addEventListener('abort', () => {
+        text.removeAttribute('title');
+        text.style.cursor = '';
+        text.style.textDecoration = '';
+      }, {once: true});
     }
   }
 
@@ -325,6 +414,15 @@ class ChromiumReadOnlyStylesPane {
 }
 
 const PREVIEWED_SELECTOR_CLASS = 'pin-op-previewed-selector';
+const OPENABLE_DECLARATIONS_CLASS = 'pin-op-openable-declarations';
+// Only a condition the viewport preview can size is offered as a link: a
+// viewport width or height (not `device-width`) compared with a px, em, or rem
+// length, outside a negated query.
+const VIEWPORT_MEDIA_FEATURE = new RegExp(
+    String.raw`(?<![\w-])(?:(?:min|max)-)?(?:width|height)\s*(?::|[<>]=?|=)\s*\d*\.?\d+\s*(?:px|em|rem)\b` +
+        String.raw`|\d*\.?\d+\s*(?:px|em|rem)\s*[<>]=?\s*(?:width|height)\b`,
+    'i');
+const NEGATED_MEDIA_QUERY = /^\s*not\b/i;
 
 const PIN_OP_CONTROL_STYLES = `
 .pseudo-state-toolbar-item {
@@ -472,6 +570,7 @@ async function createRenderedModel(snapshot: MatchedStylesSnapshot): Promise<Ren
   });
   const ruleRefByStyle = new Map<object, string>();
   const propertyStates = new WeakMap<object, PropertyState|null>();
+  const declarationByProperty = new WeakMap<object, OriginDeclaration>();
   for (const style of matchedStyles.nodeStyles()) {
     const identity = style.cssText;
     const rule = identity ? ruleByIdentity.get(identity) : undefined;
@@ -485,6 +584,10 @@ async function createRenderedModel(snapshot: MatchedStylesSnapshot): Promise<Ren
       if (!declaration) continue;
       const state = chromiumPropertyState(declaration.state);
       propertyStates.set(property, state);
+      declarationByProperty.set(property, Object.freeze({
+        property: declaration.name,
+        occurrence: declarationOccurrence(rule.declarations, index),
+      }));
       if (declaration.state === 'inactive') property.setActive(false);
     }
   }
@@ -498,7 +601,59 @@ async function createRenderedModel(snapshot: MatchedStylesSnapshot): Promise<Ren
     node,
     ruleRefByStyle,
     ruleByRef: new Map(orderedRules.map(rule => [rule.ruleRef, rule])),
+    declarationByProperty,
   });
+}
+
+/**
+ * The declaration a click inside a properties outline landed on: the row on the
+ * event's path, or the shorthand row a longhand row belongs to.
+ */
+function clickedDeclaration(
+    root: PropertyTreeElement, rendered: RenderedModel, path: readonly EventTarget[]): OriginDeclaration|undefined {
+  const rows = new Map<EventTarget, OriginDeclaration>();
+  const visit = (element: PropertyTreeElement, inherited: OriginDeclaration|undefined): void => {
+    const declaration = (element.property ? rendered.declarationByProperty.get(element.property) : undefined) ??
+        inherited;
+    if (declaration && element.listItemElement) rows.set(element.listItemElement, declaration);
+    for (const child of element.children()) visit(child, declaration);
+  };
+  for (const child of root.children()) visit(child, undefined);
+  for (const target of path) {
+    const declaration = rows.get(target);
+    if (declaration) return declaration;
+  }
+  return undefined;
+}
+
+/**
+ * The properties outline renders inside a shadow root of its own, which neither
+ * the panel's stylesheet nor the pane's reaches, so the pointer cue is adopted
+ * next to it.
+ */
+function adoptOpenableDeclarationStyles(list: HTMLElement): void {
+  const root = list.getRootNode();
+  if (!(root instanceof ShadowRoot) || root.querySelector('style[data-part="pin-op-openable-declarations"]')) {
+    return;
+  }
+  const style = document.createElement('style');
+  style.setAttribute('data-part', 'pin-op-openable-declarations');
+  style.textContent = `.${OPENABLE_DECLARATIONS_CLASS} li { cursor: pointer; }`;
+  root.append(style);
+}
+
+/**
+ * Which occurrence of its property name, counted from the end of its own rule,
+ * a declaration is. A browser keeps the last of two equal declarations, so the
+ * end is the anchor the stylesheet and the browser agree on.
+ */
+function declarationOccurrence(declarations: readonly DeclarationSnapshot[], index: number): number {
+  const name = declarations[index].name.toLowerCase();
+  let occurrence = 0;
+  for (let later = index + 1; later < declarations.length; later++) {
+    if (declarations[later].name.toLowerCase() === name) occurrence++;
+  }
+  return occurrence;
 }
 
 function orderedRuleSnapshots(snapshot: MatchedStylesSnapshot): RuleSnapshot[] {

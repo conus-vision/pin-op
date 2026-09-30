@@ -258,24 +258,414 @@ describe("RulesSourceResolver", () => {
     expect(result.dependencies.every(Object.isFrozen)).toBe(true);
   });
 
-  it("refuses unique-basename candidates as non-exact workspace matches", async () => {
-    const candidate = "file:///workspace/other/app.css";
-    const base = memoryWorkspace({ [candidate]: ".card { color: red; }" });
+  it("finds the served stylesheet by its content, not by the URL's folders", async () => {
+    const servedUri = "file:///workspace/dist/app.css";
+    const decoyUri = "file:///workspace/other/app.css";
+    const css = ".card { color: red; display: grid; }";
+    let resolutions = 0;
+    const base = memoryWorkspace({
+      [servedUri]: css,
+      // Same name, same selector, other declarations: only content tells them
+      // apart. The URL names neither folder, and its `other/` is not a clue.
+      [decoyUri]: ".card { color: blue; display: grid; }",
+    });
     const workspace: SourceWorkspace = {
       ...base,
-      resolveSourceUri: async () => ({
-        uris: [candidate],
-        status: "unique-basename",
-        strategy: "automatic",
-      }),
+      async resolveSourceUri(sourceUrl, baseUrl) {
+        resolutions += 1;
+        return base.resolveSourceUri(sourceUrl, baseUrl);
+      },
     };
-    const rule = evidence({ selector: ".card" });
+    const rule = evidence({
+      selector: ".card",
+      sourceUrl: "http://localhost:8080/some/other/path/app.css",
+      startLine: 1,
+      startColumn: 1,
+      declarations: [
+        { property: "color", value: "red" },
+        { property: "display", value: "grid" },
+      ],
+    });
 
-    await expect(resolveOne(workspace, rule)).resolves.toEqual({
+    const result = await resolveOne(workspace, rule);
+
+    expect(result).toMatchObject({
+      kind: "resolved",
+      ruleRef: rule.ruleRef,
+      document: { uri: servedUri, languageId: "css" },
+      range: {
+        start: { line: 0, character: 0 },
+        end: { line: 0, character: css.length },
+      },
+      confidence: "exact",
+      dependencies: [{ kind: "generated-css", uri: servedUri }],
+    });
+    expect(resolutions).toBe(0);
+  });
+
+  it("finds a renamed build output whose content carries the reported rules", async () => {
+    const bundleUri = "file:///workspace/build/bundle.css";
+    const rule = evidence({
+      selector: ".card__title",
+      sourceUrl: "http://localhost:8080/assets/app.css?ver=6.1",
+      startLine: 2,
+      startColumn: 1,
+      rulePath: "0.1",
+    });
+
+    const result = await resolveOne(memoryWorkspace({
+      [bundleUri]: ".card { display: grid; }\n.card__title { color: red; }",
+      "file:///workspace/src/unrelated.css": ".banner { color: red; }",
+    }), rule);
+
+    expect(result).toMatchObject({
+      kind: "resolved",
+      document: { uri: bundleUri, languageId: "css" },
+      range: { start: { line: 1, character: 0 } },
+      confidence: "exact",
+    });
+  });
+
+  it("prefers the copy named like the served stylesheet among identical files", async () => {
+    const css = ".card { color: red; }";
+    const rule = evidence({
+      selector: ".card",
+      sourceUrl: "http://localhost:8080/static/app.css",
+      startLine: 1,
+      startColumn: 1,
+    });
+
+    await expect(resolveOne(memoryWorkspace({
+      "file:///workspace/dist/copy.css": css,
+      "file:///workspace/dist/app.css": css,
+    }), rule)).resolves.toMatchObject({
+      kind: "resolved",
+      document: { uri: "file:///workspace/dist/app.css" },
+    });
+  });
+
+  it("prefers the copy laid out like the served stylesheet when names cannot choose", async () => {
+    const rule = evidence({
+      selector: ".card",
+      sourceUrl: "http://localhost:8080/static/app.3f2a.css",
+      startLine: 2,
+      startColumn: 1,
+      rulePath: "0.1",
+    });
+
+    await expect(resolveOne(memoryWorkspace({
+      "file:///workspace/dist/app.css":
+        ".tile { color: blue; }\n.card { color: red; }",
+      "file:///workspace/dist/app.min.css":
+        ".tile{color:blue}.card{color:red}",
+    }), rule)).resolves.toMatchObject({
+      kind: "resolved",
+      document: { uri: "file:///workspace/dist/app.css" },
+      range: { start: { line: 1, character: 0 } },
+    });
+  });
+
+  it("fails closed when identical copies cannot be told apart", async () => {
+    const css = ".card { color: red; }";
+    const rule = evidence({
+      selector: ".card",
+      sourceUrl: "http://localhost:8080/app.css",
+      startLine: 1,
+      startColumn: 1,
+    });
+
+    await expect(resolveOne(memoryWorkspace({
+      "file:///workspace/packages/a/app.css": css,
+      "file:///workspace/packages/b/app.css": css,
+    }), rule)).resolves.toEqual({
       kind: "unresolved",
       ruleRef: rule.ruleRef,
-      reason: "non-exact-workspace-match",
+      reason: "generated-source-ambiguous",
     });
+  });
+
+  it("leaves a rule unresolved when no workspace stylesheet carries it", async () => {
+    const hashed = evidence({
+      selector: ".card",
+      sourceUrl: "http://localhost:4173/assets/index-3f2a.css",
+      startLine: 1,
+      startColumn: 1,
+    });
+    const named = evidence({ selector: ".card", startLine: 1, startColumn: 1 });
+
+    await expect(resolveOne(memoryWorkspace({
+      "file:///workspace/dist/app.css": ".banner { color: red; }",
+      "file:///workspace/src/card.scss": ".card { color: red; }",
+    }), hashed)).resolves.toEqual({
+      kind: "unresolved",
+      ruleRef: hashed.ruleRef,
+      reason: "generated-source-not-found",
+    });
+    // A file named like the served stylesheet, without the rule: it is the
+    // one that says why.
+    for (const css of [".banner { color: red; }", ".card { color: blue; }"]) {
+      await expect(resolveOne(memoryWorkspace({
+        "file:///workspace/dist/app.css": css,
+      }), named)).resolves.toMatchObject({
+        kind: "unresolved",
+        reason: "generated-css-not-exact",
+      });
+    }
+  });
+
+  it("locates each stylesheet of a batch by its own rules from one reading of the workspace", async () => {
+    const alphaUri = "file:///workspace/dist/one.css";
+    const betaUri = "file:///workspace/dist/two.css";
+    const files = {
+      [alphaUri]: ".alpha { color: red; }",
+      [betaUri]: ".beta { color: red; }",
+    };
+    const base = memoryWorkspace(files);
+    const listings: string[] = [];
+    const reads = new Map<string, number>();
+    const workspace = {
+      ...base,
+      async findFiles(pattern: string) {
+        listings.push(pattern);
+        return base.findFiles(pattern);
+      },
+      async readRulesSourceSnapshot(
+        uri: string,
+        maxBytes: number,
+        signal?: AbortSignal,
+      ) {
+        reads.set(uri, (reads.get(uri) ?? 0) + 1);
+        return base.readRulesSourceSnapshot(uri, maxBytes, signal);
+      },
+    };
+
+    const batch = await resolveBatch(workspace, [
+      evidence({
+        selector: ".alpha",
+        sourceUrl: "http://localhost:8080/css/a.css",
+        startLine: 1,
+        startColumn: 1,
+      }),
+      evidence({
+        selector: ".beta",
+        sourceUrl: "http://localhost:8080/css/b.css",
+        startLine: 1,
+        startColumn: 1,
+      }),
+    ]);
+
+    expect(batch.results).toMatchObject([
+      { kind: "resolved", document: { uri: alphaUri } },
+      { kind: "resolved", document: { uri: betaUri } },
+    ]);
+    expect(listings).toEqual(["**/*.css"]);
+    // Ranked once, read into the batch once, fenced once, swept once.
+    expect(reads).toEqual(new Map([[alphaUri, 4], [betaUri, 4]]));
+  });
+
+  it("charges only the stylesheets it parses to the batch budget", async () => {
+    const cssUri = "file:///workspace/dist/app.css";
+    const css = ".card { color: red; }";
+    const files: Record<string, string> = { [cssUri]: css };
+    for (let index = 0; index < 8; index += 1) {
+      files[`file:///workspace/vendor/theme-${index}.css`] =
+        `.banner-${index} { color: red; }/*${"x".repeat(64 * 1024)}*/`;
+    }
+    const resolver = new RulesSourceResolver(
+      memoryWorkspace(files),
+      undefined,
+      undefined,
+      { maxRetainedSourceBytes: utf8ByteLength(css) },
+    );
+
+    const batch = await resolver.resolve({
+      selectionMessageId: "inspect-ranked-budget",
+      pageUrl: "http://localhost:4173/page",
+      ruleEvidence: {
+        rules: [evidence({
+          selector: ".card",
+          // Named like no file, so every file is read to rank it.
+          sourceUrl: "http://localhost:4173/assets/index-3f2a.css",
+          startLine: 1,
+          startColumn: 1,
+        })],
+        omittedRuleCount: 0,
+      },
+      signal: new AbortController().signal,
+    });
+
+    expect(batch.results).toMatchObject([{
+      kind: "resolved",
+      document: { uri: cssUri, languageId: "css" },
+    }]);
+  });
+
+  it("ranks the workspace's stylesheets without opening them as documents", async () => {
+    const cssUri = "file:///workspace/dist/app.css";
+    const files: Record<string, string> = {
+      [cssUri]: ".card { color: red; }",
+      "file:///workspace/vendor/a.css": ".banner { color: red; }",
+      "file:///workspace/vendor/b.css": ".footer { color: red; }",
+    };
+    const workspace = rankingWorkspace(files);
+
+    const result = await resolveOne(workspace, evidence({
+      selector: ".card",
+      sourceUrl: "http://localhost:4173/assets/index-3f2a.css",
+      startLine: 1,
+      startColumn: 1,
+    }));
+
+    expect(result).toMatchObject({
+      kind: "resolved",
+      document: { uri: cssUri, languageId: "css" },
+    });
+    expect([...workspace.rankingReads.keys()].sort()).toEqual(
+      Object.keys(files).sort(),
+    );
+    // Snapshots -- documents, in VS Code -- only for the file parsed and
+    // chosen: into the batch, fenced, swept.
+    expect(workspace.snapshotReads).toEqual(new Map([[cssUri, 3]]));
+  });
+
+  it("asks the file named like the served stylesheet first and ranks nothing when it carries every rule", async () => {
+    const cssUri = "file:///workspace/dist/app.css";
+    const css = ".card { color: red; }\n.tile { color: blue; }";
+    const workspace = rankingWorkspace({
+      [cssUri]: css,
+      // An identical copy elsewhere shares less of the served path, so it
+      // could never be chosen over the file named like the stylesheet.
+      "file:///workspace/backup/copy.css": css,
+    });
+
+    const batch = await resolveBatch(workspace, [
+      evidence({ selector: ".card", startLine: 1, startColumn: 1 }),
+      evidence({
+        selector: ".tile",
+        startLine: 2,
+        startColumn: 1,
+        rulePath: "0.1",
+        declarations: [{ property: "color", value: "blue" }],
+      }),
+    ]);
+
+    expect(batch.results).toMatchObject([
+      { kind: "resolved", document: { uri: cssUri } },
+      { kind: "resolved", document: { uri: cssUri } },
+    ]);
+    expect(workspace.rankingReads).toEqual(new Map());
+    expect([...workspace.snapshotReads.keys()]).toEqual([cssUri]);
+  });
+
+  it("ranks the whole workspace when the file named like the served stylesheet misses a rule", async () => {
+    const staleUri = "file:///workspace/dist/app.css";
+    const bundleUri = "file:///workspace/build/bundle.css";
+    const workspace = rankingWorkspace({
+      [staleUri]: ".card { color: red; }",
+      [bundleUri]: ".card { color: red; }\n.tile { color: blue; }",
+    });
+
+    const batch = await resolveBatch(workspace, [
+      evidence({ selector: ".card", startLine: 1, startColumn: 1 }),
+      evidence({
+        selector: ".tile",
+        startLine: 2,
+        startColumn: 1,
+        rulePath: "0.1",
+        declarations: [{ property: "color", value: "blue" }],
+      }),
+    ]);
+
+    expect(batch.results).toMatchObject([
+      { kind: "resolved", document: { uri: bundleUri } },
+      { kind: "resolved", document: { uri: bundleUri } },
+    ]);
+    expect([...workspace.rankingReads.keys()].sort()).toEqual([
+      bundleUri,
+      staleUri,
+    ]);
+  });
+
+  it("remembers where a served stylesheet lives until a stylesheet changes", async () => {
+    const staleUri = "file:///workspace/dist/app.css";
+    const bundleUri = "file:///workspace/build/bundle.css";
+    const workspace = rankingWorkspace({
+      [staleUri]: ".card { color: red; }",
+      [bundleUri]: ".card { color: red; }\n.tile { color: blue; }",
+    });
+    const resolver = new RulesSourceResolver(workspace);
+    const tile = () => evidence({
+      selector: ".tile",
+      startLine: 2,
+      startColumn: 1,
+      rulePath: "0.1",
+      declarations: [{ property: "color", value: "blue" }],
+    });
+
+    await resolveWith(resolver, [tile()]);
+    expect(workspace.rankingReads.size).toBe(2);
+    workspace.rankingReads.clear();
+
+    // A later selection from the same stylesheet asks the remembered file and
+    // the one file that ends more like the URL, and ranks nothing.
+    const again = await resolveWith(resolver, [tile()]);
+    expect(again.results).toMatchObject([
+      { kind: "resolved", document: { uri: bundleUri } },
+    ]);
+    expect(workspace.rankingReads.size).toBe(0);
+
+    resolver.stylesheetsChanged();
+    await resolveWith(resolver, [tile()]);
+    expect(workspace.rankingReads.size).toBe(2);
+  });
+
+  it("lets a closer file that now carries every rule replace the remembered one", async () => {
+    const appUri = "file:///workspace/dist/app.css";
+    const bundleUri = "file:///workspace/build/bundle.css";
+    const workspace = rankingWorkspace({
+      [appUri]: ".card { color: red; }",
+      [bundleUri]: ".card { color: red; }\n.tile { color: blue; }",
+    });
+    const resolver = new RulesSourceResolver(workspace);
+
+    await resolveWith(resolver, [evidence({
+      selector: ".tile",
+      startLine: 2,
+      startColumn: 1,
+      rulePath: "0.1",
+      declarations: [{ property: "color", value: "blue" }],
+    })]);
+    const card = await resolveWith(resolver, [
+      evidence({ selector: ".card", startLine: 1, startColumn: 1 }),
+    ]);
+
+    expect(card.results).toMatchObject([
+      { kind: "resolved", document: { uri: appUri } },
+    ]);
+  });
+
+  it("does not remember a stylesheet whose rules were mentioned but not carried", async () => {
+    const appUri = "file:///workspace/dist/app.css";
+    const workspace = rankingWorkspace({
+      [appUri]: ".card { color: green; }\n.tile { color: blue; }",
+    });
+    const resolver = new RulesSourceResolver(workspace);
+
+    const miss = await resolveWith(resolver, [
+      evidence({ selector: ".card", startLine: 1, startColumn: 1 }),
+    ]);
+    expect(miss.results).toMatchObject([{ kind: "unresolved" }]);
+    const hit = await resolveWith(resolver, [evidence({
+      selector: ".tile",
+      startLine: 2,
+      startColumn: 1,
+      rulePath: "0.1",
+      declarations: [{ property: "color", value: "blue" }],
+    })]);
+
+    expect(hit.results).toMatchObject([
+      { kind: "resolved", document: { uri: appUri } },
+    ]);
   });
 
   it("uses the exact selector-start mapping and never a declaration-body mixin mapping", async () => {
@@ -1165,30 +1555,190 @@ describe("RulesSourceResolver", () => {
     });
   });
 
-  it("rejects ambiguous and outside generated CSS before reading it", async () => {
-    const rule = evidence({ selector: ".card" });
-    const base = memoryWorkspace({});
-    for (const resolution of [
-      {
-        uris: [],
-        status: "ambiguous",
-        strategy: "automatic",
+  it("reads a map's sources relative to the stylesheet on disk, not the served URL", async () => {
+    const cssUri = "file:///workspace/dist/app.css";
+    const mapUri = `${cssUri}.map`;
+    const scssUri = "file:///workspace/src/card.scss";
+    const block = ".card { color: red; }";
+    const generator = new SourceMapGenerator({ file: "app.css" });
+    generator.addMapping({
+      generated: { line: 1, column: 0 },
+      original: { line: 1, column: 0 },
+      source: "../src/card.scss",
+    });
+    // Read against the served URL the source would be `/some/other/src/`,
+    // where a decoy of the same name waits.
+    const result = await resolveOne(memoryWorkspace({
+      [cssUri]: `${block}\n/*# sourceMappingURL=app.css.map */`,
+      [mapUri]: generator.toString(),
+      [scssUri]: block,
+      "file:///workspace/some/other/src/card.scss": block,
+    }), evidence({
+      selector: ".card",
+      sourceUrl: "http://localhost:8080/some/other/path/app.css",
+      startLine: 1,
+      startColumn: 1,
+    }));
+
+    expect(result).toMatchObject({
+      kind: "resolved",
+      document: { uri: scssUri, languageId: "scss" },
+      confidence: "sourcemap",
+      dependencies: [
+        { kind: "generated-css", uri: cssUri },
+        { kind: "external-source-map", uri: mapUri },
+        { kind: "original-source", uri: scssUri },
+      ],
+    });
+  });
+
+  it("finds a bundler-named original by the text its map carries", async () => {
+    const cssUri = "file:///workspace/packages/a/dist/app.css";
+    const scssUri = "file:///workspace/packages/a/src/card.scss";
+    const scss = ".card {\n  color: red;\n}\n";
+    const generator = new SourceMapGenerator({ file: "app.css" });
+    generator.addMapping({
+      generated: { line: 1, column: 0 },
+      original: { line: 1, column: 0 },
+      source: "webpack:///./src/card.scss",
+    });
+    generator.setSourceContent("webpack:///./src/card.scss", scss);
+    const map = Buffer.from(generator.toString()).toString("base64");
+    const css = `.card { color: red; }\n/*# sourceMappingURL=data:application/json;base64,${map} */`;
+
+    const siblingUri = "file:///workspace/packages/b/src/card.scss";
+    const workspace = rankingWorkspace({
+      [cssUri]: css,
+      [scssUri]: scss,
+      // Same name under the same recorded path, other text: the sibling
+      // package's file, which the map was not built from.
+      [siblingUri]: ".card { color: blue; }",
+    });
+
+    const result = await resolveOne(
+      workspace,
+      evidence({ selector: ".card", startLine: 1, startColumn: 1 }),
+    );
+
+    expect(result).toMatchObject({
+      kind: "resolved",
+      document: { uri: scssUri, languageId: "scss" },
+      range: { start: { line: 0, character: 0 } },
+      confidence: "sourcemap",
+      dependencies: [
+        { kind: "generated-css", uri: cssUri },
+        { kind: "original-source", uri: scssUri },
+      ],
+    });
+    // Both files of that name were compared by their text; only the one that
+    // matched was opened as a snapshot.
+    expect([...workspace.rankingReads.keys()].sort()).toEqual([
+      scssUri,
+      siblingUri,
+    ]);
+    expect([...workspace.snapshotReads.keys()].sort()).toEqual([
+      cssUri,
+      scssUri,
+    ]);
+  });
+
+  it("finds a renamed original by its text only when no file carries its name", async () => {
+    const cssUri = "file:///workspace/dist/app.css";
+    const scss = ".card {\n  color: red;\n}\n";
+    const generator = new SourceMapGenerator({ file: "app.css" });
+    generator.addMapping({
+      generated: { line: 1, column: 0 },
+      original: { line: 1, column: 0 },
+      source: "webpack:///./src/card.scss",
+    });
+    generator.setSourceContent("webpack:///./src/card.scss", scss);
+    const map = Buffer.from(generator.toString()).toString("base64");
+    const css = `.card { color: red; }\n/*# sourceMappingURL=data:application/json;base64,${map} */`;
+    const rule = evidence({ selector: ".card", startLine: 1, startColumn: 1 });
+
+    await expect(resolveOne(memoryWorkspace({
+      [cssUri]: css,
+      "file:///workspace/styles/renamed.scss": scss,
+    }), rule)).resolves.toMatchObject({
+      kind: "resolved",
+      document: {
+        uri: "file:///workspace/styles/renamed.scss",
+        languageId: "scss",
       },
-      {
-        uris: ["file:///outside/app.css"],
-        status: "exact",
-        strategy: "automatic",
+      confidence: "sourcemap",
+    });
+
+    // `card.scss` was edited since the build: the map is stale, and an old copy
+    // of its text under another name is not what it points at.
+    await expect(resolveOne(memoryWorkspace({
+      [cssUri]: css,
+      "file:///workspace/src/card.scss": ".card {\n  color: blue;\n}\n",
+      "file:///workspace/backup/old.scss": scss,
+    }), rule)).resolves.toMatchObject({
+      kind: "resolved",
+      document: { uri: cssUri, languageId: "css" },
+      confidence: "exact",
+    });
+  });
+
+  it("opens the one original of its name when the map carries no text", async () => {
+    const cssUri = "file:///workspace/dist/app.css";
+    // Not where the bundler recorded it (`./src/`), and still the only one.
+    const scssUri = "file:///workspace/theme/styles/card.scss";
+    const block = ".card { color: red; }";
+    const generator = new SourceMapGenerator({ file: "app.css" });
+    generator.addMapping({
+      generated: { line: 1, column: 0 },
+      original: { line: 1, column: 0 },
+      source: "webpack:///./src/card.scss",
+    });
+    const map = Buffer.from(generator.toString()).toString("base64");
+    const css = `${block}\n/*# sourceMappingURL=data:application/json;base64,${map} */`;
+    const rule = evidence({ selector: ".card", startLine: 1, startColumn: 1 });
+
+    await expect(resolveOne(memoryWorkspace({
+      [cssUri]: css,
+      [scssUri]: block,
+    }), rule)).resolves.toMatchObject({
+      kind: "resolved",
+      document: { uri: scssUri, languageId: "scss" },
+      confidence: "sourcemap",
+    });
+    await expect(resolveOne(memoryWorkspace({
+      [cssUri]: css,
+      "file:///workspace/packages/a/card.scss": block,
+      "file:///workspace/packages/b/card.scss": block,
+    }), rule)).resolves.toMatchObject({
+      kind: "resolved",
+      document: { uri: cssUri, languageId: "css" },
+      confidence: "exact",
+    });
+  });
+
+  it("never reads a listed stylesheet outside the workspace", async () => {
+    const outside = "file:///outside/app.css";
+    const base = memoryWorkspace({ [outside]: ".card { color: red; }" });
+    const reads: string[] = [];
+    const workspace = {
+      ...base,
+      async readRulesSourceSnapshot(
+        uri: string,
+        maxBytes: number,
+        signal?: AbortSignal,
+      ) {
+        reads.push(uri);
+        return base.readRulesSourceSnapshot(uri, maxBytes, signal);
       },
-    ] as const) {
-      const workspace: SourceWorkspace = {
-        ...base,
-        resolveSourceUri: async () => resolution,
-      };
-      await expect(resolveOne(workspace, rule)).resolves.toMatchObject({
-        kind: "unresolved",
-        reason: "non-exact-workspace-match",
-      });
-    }
+    };
+
+    await expect(resolveOne(
+      workspace,
+      evidence({ selector: ".card", startLine: 1, startColumn: 1 }),
+    )).resolves.toMatchObject({
+      kind: "unresolved",
+      reason: "generated-source-not-found",
+    });
+    expect(reads).toEqual([]);
   });
 
   it("fails closed for cancellation, stale input, omitted evidence, and duplicate refs", async () => {
@@ -1220,7 +1770,7 @@ describe("RulesSourceResolver", () => {
     });
   });
 
-  it("aborts promptly while exact workspace resolution is still pending", async () => {
+  it("aborts promptly while the workspace's stylesheets are still being listed", async () => {
     const cssUri = "file:///workspace/dist/app.css";
     const base = memoryWorkspace({ [cssUri]: ".card { color: red; }" });
     let release!: () => void;
@@ -1233,10 +1783,10 @@ describe("RulesSourceResolver", () => {
     });
     const workspace: SourceWorkspace = {
       ...base,
-      async resolveSourceUri(sourceUrl, baseUrl) {
+      async findFiles(pattern) {
         markStarted();
         await gate;
-        return base.resolveSourceUri(sourceUrl, baseUrl);
+        return base.findFiles(pattern);
       },
     };
     const controller = new AbortController();
@@ -1607,8 +2157,13 @@ describe("RulesSourceResolver", () => {
     });
     const reads = new Map<string, number>();
     let resolutions = 0;
+    let listings = 0;
     const workspace: SourceWorkspace = {
       ...base,
+      async findFiles(pattern) {
+        listings += 1;
+        return base.findFiles(pattern);
+      },
       async readText(uri) {
         reads.set(uri, (reads.get(uri) ?? 0) + 1);
         return base.readText(uri);
@@ -1647,12 +2202,16 @@ describe("RulesSourceResolver", () => {
     expect(batch.results.map((result) =>
       result.kind === "resolved" ? result.document.languageId : result.kind
     )).toEqual(["scss", "scss"]);
+    // The one file named like the served stylesheet carries both rules, so no
+    // other file is read to rank it, and the parse that verified it is reused.
     expect(reads).toEqual(new Map([
       [cssUri, 3],
       [mapUri, 3],
       [scssUri, 3],
     ]));
-    expect(resolutions).toBe(2);
+    expect(listings).toBe(1);
+    // Only the map's own `file:` name for the original is resolved.
+    expect(resolutions).toBe(1);
     expect(parse).toHaveBeenCalledTimes(2);
   });
 
@@ -2021,6 +2580,18 @@ async function resolveOne(
   return batch.results[0]!;
 }
 
+function resolveWith(
+  resolver: RulesSourceResolver,
+  rules: readonly InspectRuleEvidence[],
+) {
+  return resolver.resolve({
+    selectionMessageId: "inspect-1",
+    pageUrl: "http://localhost:4173/page",
+    ruleEvidence: { rules, omittedRuleCount: 0 },
+    signal: new AbortController().signal,
+  });
+}
+
 async function resolveBatch(
   workspace: SourceWorkspace,
   rules: readonly InspectRuleEvidence[],
@@ -2149,6 +2720,43 @@ function memoryWorkspace(
         text,
         documentVersion: 1,
       };
+    },
+  };
+}
+
+/**
+ * A workspace with its own ranking read, the way VS Code's is: counted apart
+ * from snapshots, which in VS Code open a document.
+ */
+function rankingWorkspace(files: Readonly<Record<string, string>>) {
+  const base = memoryWorkspace(files);
+  const rankingReads = new Map<string, number>();
+  const snapshotReads = new Map<string, number>();
+  return {
+    ...base,
+    rankingReads,
+    snapshotReads,
+    async readRulesRankingText(
+      uri: string,
+      maxBytes: number,
+      signal?: AbortSignal,
+    ) {
+      if (signal?.aborted) throw namedAbortError();
+      rankingReads.set(uri, (rankingReads.get(uri) ?? 0) + 1);
+      const text = files[stripQueryAndFragment(uri)];
+      if (text === undefined) throw new Error(`Missing fixture: ${uri}`);
+      if (utf8ByteLength(text) > maxBytes) {
+        throw new RulesSourceSnapshotLimitError();
+      }
+      return text;
+    },
+    async readRulesSourceSnapshot(
+      uri: string,
+      maxBytes: number,
+      signal?: AbortSignal,
+    ) {
+      snapshotReads.set(uri, (snapshotReads.get(uri) ?? 0) + 1);
+      return base.readRulesSourceSnapshot(uri, maxBytes, signal);
     },
   };
 }

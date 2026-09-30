@@ -180,6 +180,28 @@ describe("BackgroundRouter", () => {
     });
   });
 
+  it("resizes only the window holding the panel's own tab for an @media preview", async () => {
+    const resizes: unknown[] = [];
+    const harness = createHarness({
+      resizeTabViewport: async (tabId, windowId, size) => {
+        resizes.push([tabId, windowId, size]);
+      },
+    });
+    const port = await harness.registerAndConnect(
+      "channel-viewport",
+      17,
+      "source-viewport",
+    );
+    await flushMicrotasks();
+
+    port.emitMessage({ type: "pin-op.viewport.resize", width: 600 });
+    port.emitMessage({ type: "pin-op.viewport.resize", width: 600, tabId: 99 });
+    port.emitMessage({ type: "pin-op.viewport.resize", width: 20 });
+    await flushMicrotasks();
+
+    expect(resizes).toEqual([[17, 10, { width: 600 }]]);
+  });
+
   it("revokes active refresh work and participation when the panel closes", async () => {
     const harness = createHarness();
     const port = await harness.registerAndConnect(
@@ -12406,6 +12428,11 @@ interface HarnessOptions {
   readonly initialPanelState?: BrowserWindowConnectionState;
   readonly initialProtocolMismatch?: BrowserProtocolMismatch;
   readonly cleanupAckTimeoutMs?: number;
+  readonly resizeTabViewport?: (
+    tabId: number,
+    windowId: number,
+    size: { readonly width?: number; readonly height?: number },
+  ) => Promise<unknown>;
 }
 
 function createHarness(options: HarnessOptions = {}) {
@@ -12544,6 +12571,9 @@ function createHarness(options: HarnessOptions = {}) {
     tabRefreshCoordinator: tabRefresh,
     contentRefreshCoordinator: contentRefresh,
     inspectCoordinator,
+    ...(options.resizeTabViewport
+      ? { resizeTabViewport: options.resizeTabViewport }
+      : {}),
     panelSessionTransport: options.panelSessionTransport,
     inspectCorrelationStore: options.inspectCorrelationStore,
     subscriptions: options.subscriptions,

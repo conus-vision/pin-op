@@ -9,6 +9,7 @@ import type {
   PseudoStateSnapshot,
   RulesDataSource,
   RulesPresentationSnapshot,
+  RuleOriginDeclaration,
   SourceLinkDelegate,
 } from "@pin-op/devtools-elements-ui";
 import selectorParser from "postcss-selector-parser";
@@ -43,7 +44,9 @@ import {
   parseInspectPortInvalidated,
   parsePanelRulesSourcesInvalidatedState,
   parseProtocolCompatibilityMessage,
+  type PanelViewportResizeCommand,
 } from "./inspectPortProtocol.js";
+import { viewportForMediaCondition } from "./mediaQueryViewport.js";
 import {
   parseStylesEvent,
   type StylesInvalidatedEvent,
@@ -156,6 +159,7 @@ function createInspectorPresentation(
       const rulesAdapter = new MatchedStylesRulesAdapter(
         matchedStylesModel,
         rulesSourcesController,
+        context.dispatchViewportResize,
       );
       let removeSettingsBindings: (() => void) | undefined;
       let sourcePaneView: SourcePaneView | undefined;
@@ -421,6 +425,9 @@ class MatchedStylesRulesAdapter implements RulesDataSource, SourceLinkDelegate {
   public constructor(
     private readonly model: MatchedStylesModel,
     private readonly rulesSources: RulesSourcesController,
+    private readonly resizeViewport: (
+      command: PanelViewportResizeCommand,
+    ) => void = noOp,
   ) {}
 
   public snapshot(): RulesPresentationSnapshot {
@@ -449,8 +456,20 @@ class MatchedStylesRulesAdapter implements RulesDataSource, SourceLinkDelegate {
     return this.rulesSources.originFor(ruleRef);
   }
 
-  public openRuleOrigin(ruleRef: string): void {
-    this.rulesSources.open(ruleRef);
+  public openRuleOrigin(
+    ruleRef: string,
+    declaration?: RuleOriginDeclaration,
+  ): void {
+    this.rulesSources.open(ruleRef, declaration);
+  }
+
+  public previewMediaQuery(conditionText: string): void {
+    const viewport = viewportForMediaCondition(conditionText);
+    if (!viewport) return;
+    this.resizeViewport(Object.freeze({
+      type: "pin-op.viewport.resize",
+      ...viewport,
+    }));
   }
 
   public filter(_query: string): void {

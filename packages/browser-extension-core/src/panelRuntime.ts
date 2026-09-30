@@ -49,6 +49,7 @@ import {
   parseProtocolCompatibilityMessage,
   type PanelInspectPort,
   type PanelRulesOpenCommand,
+  type PanelViewportResizeCommand,
 } from "./inspectPortProtocol.js";
 import type { BrowserWindowConnectionState } from "./windowConnectionCoordinator.js";
 import type {
@@ -95,6 +96,9 @@ interface PanelRuntimePresentationContext {
     signal: AbortSignal,
   ) => Promise<StylesResponse>;
   readonly dispatchRulesOpen: (command: PanelRulesOpenCommand) => void;
+  readonly dispatchViewportResize: (
+    command: PanelViewportResizeCommand,
+  ) => void;
   readonly subscribeInspectorMessages: (
     listener: (message: unknown) => void,
   ) => () => void;
@@ -273,6 +277,8 @@ export function startPanelRuntimeWithPresentation(
       inspectTransport.requestStyles(request, signal),
     dispatchRulesOpen: (command) =>
       inspectTransport.dispatchRulesOpen(command),
+    dispatchViewportResize: (command) =>
+      inspectTransport.dispatchViewportResize(command),
     subscribeInspectorMessages(listener) {
       stateListeners.add(listener);
       return () => stateListeners.delete(listener);

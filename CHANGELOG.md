@@ -2,6 +2,69 @@
 
 All notable changes to Pin-op will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Clicking a declaration in Rules opens its rule in VS Code with the cursor at
+  the start of that declaration's value, so it can be edited straight away
+  instead of being looked for inside the rule. A longhand under a shorthand
+  opens the shorthand the stylesheet wrote; a declaration the rule does not
+  write itself -- an `@include` put it there -- opens the rule, as the origin
+  link does. When a rule writes a property twice (`height: 100vh; height:
+  100dvh`), the click opens the one the browser shows, the last one.
+  `rules.open` carries the clicked property name and its occurrence, counted
+  from the end of the rule, and nothing else; the IDE finds the value inside the private range
+  it already holds. The wire protocol stays at `7`, and an IDE older than this
+  release rejects a declaration click, so the browser and VS Code halves should
+  be updated together.
+- Clicking an `@media` condition that names a viewport width or height resizes
+  the browser window so the inspected page is shown at that size. A range is
+  shown at its widest matching width, an open-ended `min-width` at the minimum,
+  and `em`/`rem` lengths at 16 px; a maximized window is restored first and page
+  zoom is corrected for. Only the window holding the panel's own tab is resized.
+  Only a condition that can be shown this way is underlined: a width or height
+  compared with a px, em, or rem length, outside a negated query and not a
+  `device-width`.
+
+- JavaScript in Sources. A built-in provider resolves the active JavaScript,
+  TypeScript, JSX, or TSX document and lists, in Applicable Sources and the
+  Inspector's Source tab, where the script refers to the selected element and
+  its parent: selector literals judged by their subject (`.card .title` names a
+  `.title`), `getElementById`, `classList` and jQuery class calls, `className`
+  and `id` assignments, `dataset` members and attribute calls, JSX opening tags,
+  and markup written into strings. Comments, regular expressions, and whatever a
+  template substitution writes are never read as references. Every id, class,
+  and attribute value a literal names must be on the element; matches are
+  `heuristic`, ranked id, attribute, then class, at most eight per element.
+
+### Fixed
+
+- A PHP document no longer reports `error` with `plugin.invalidResult` when the
+  selected element misses and its parent carries no id, class, or data
+  attribute, a bare `<body>` for instance; the miss reads as a miss.
+- The footer says "N matches highlighted" for PHP and script documents instead
+  of counting template and script matches as rules.
+
+### Changed
+
+- Advanced the product release to `0.5.0`. The wire protocol stays at `7`.
+- Rules finds the stylesheet behind a served URL by its content instead of by
+  the URL's folders. Every `.css` file in the workspace is a candidate, and the
+  one carrying the most of the rules the browser reported from that URL, matched
+  exactly, is chosen; a path ending like the URL only breaks a tie, and a tie
+  that remains is left unresolved rather than guessed. A dev server that mounts
+  `dist/` at the root, a CMS serving a theme from inside its install, or a
+  renamed build output no longer hides the source. The file whose path is most
+  like the URL is tried first and, when it carries every reported rule, nothing
+  else is read; otherwise the workspace's stylesheets are ranked from their text
+  without being opened as documents. Source maps are read relative to the chosen
+  file on disk, and a bundler-named source (`webpack://`) is matched to the
+  `.scss` file of that name whose text the map carries. Source-pane lookup is
+  unchanged. Where a stylesheet lives is remembered between selections until
+  any workspace stylesheet changes, so the workspace is read again only when
+  it has to be.
+
 ## [0.4.2] - 2026-09-07
 
 ### Added

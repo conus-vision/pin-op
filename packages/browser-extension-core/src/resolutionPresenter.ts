@@ -197,10 +197,20 @@ export class ResolutionPresenter {
   }
 }
 
+const STYLESHEET_LANGUAGES: ReadonlySet<string> = new Set([
+  "css",
+  "scss",
+  "sass",
+  "less",
+]);
+
 function resolutionStatusText(message: ResolutionMessage): string {
   if (message.status === "matched") {
     const total = message.selectedMatchCount + message.parentMatchCount;
-    return `${total} ${plural(total, "rule", "rules")} highlighted`;
+    // A stylesheet match is a rule; a template or script match is not.
+    return STYLESHEET_LANGUAGES.has(message.document?.languageId ?? "css")
+      ? `${total} ${plural(total, "rule", "rules")} highlighted`
+      : `${total} ${plural(total, "match", "matches")} highlighted`;
   }
   if (message.status === "error") {
     const diagnostic = diagnosticPriority.find((code) =>
