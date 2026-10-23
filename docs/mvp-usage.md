@@ -251,6 +251,45 @@ compare, so it is identified by its source map and by what it declares directly;
 its origin opens the line where those declarations are written, which may be the
 mixin rather than the rule that includes it.
 
+A value Sass computes is not the text the file holds: the file says
+`border-radius: t.$radius`, the generated CSS and the browser say `14px`. Such a
+value -- a variable, an interpolation, a module function such as `math.div`, a
+Sass function such as `rgba($c, .5)` or `percentage()`, a project `@function`,
+or math Sass evaluates -- is proven through the source map instead of by its
+text. dart-sass maps every declaration it writes to the declaration it
+compiled, and the SCSS origin is shown only when the generated declaration's
+start maps exactly onto a declaration the same block writes directly, under the
+same property and priority. A plain value, including `var(--radius)`, must still
+match as written, which is what notices an SCSS file edited after it was
+compiled. A computed value edited in place before recompiling cannot be noticed
+that way; the origin then still names the block and line the rule comes from. A
+source map that maps selectors but not declarations, or a declaration that
+compiles to nothing (a `null` value), leaves the rule on its verified generated
+CSS.
+
+Browsers report shorthands in their own words: they leave out every part that
+holds its initial value, write the parts in their own order, and fold a
+longhand written after the shorthand into it, and Chrome and Firefox do not
+agree with each other. `transition: transform 0.2s ease` comes back as
+`transform 0.2s`, `flex: 1` as `1 1 0%`, `border: none` as four declarations in
+Chrome and as `medium` in Firefox. Rules therefore reads both sides as the
+longhands a shorthand sets, every omitted part at its initial value, for
+`transition`, `animation`, `flex`, `flex-flow`, `outline`, `border` and its
+sides and logical sides, `background`, `font`, `list-style`, `columns`, and
+`text-decoration`; positions such as `background-position`, `object-position`,
+and `transform-origin`; `url()` quoting; gradients' default direction, shape,
+and centre; legacy names both engines alias, such as `grid-gap` and
+`-webkit-transform`; and Firefox's `-moz-box-*` names for the `-webkit-box-*`
+properties a line clamp uses. A value that cannot be read with certainty, such
+as one waiting on `var()`, is compared as written.
+
+Some reports cannot be matched without guessing and leave the rule on its
+verified generated CSS: Chrome reports `transition: opacity 0s 1s` as
+`opacity 1s`, which reads as a one-second duration, so a zero duration followed
+by a delay is matched in Firefox only; `border-image`, `mask`, `offset`, and
+`grid: auto-flow` shorthands; and a prefixed name only one engine aliases, such
+as `-moz-transform` or `-webkit-column-count`.
+
 Source remains active-document-only. A built-in PHP provider reads the
 active PHP document, using instrumented `php.template` or
 `wordpress.acf-block` facts when a runtime emits them and otherwise matching

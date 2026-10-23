@@ -1,3 +1,11 @@
+import {
+  canonicalGradientArguments,
+  canonicalLonghandValue,
+  canonicalPropertyName,
+  expandBrowserShorthand,
+  gradientKind,
+  splitTopLevel,
+} from "./browserShorthands.js";
 import type { CssResolutionFact } from "./cssFacts.js";
 import type {
   CssDeclarationEvidence,
@@ -156,10 +164,12 @@ function readsAsPixels(reported: string, declared: string): boolean {
  * was marked important. Reading the rule the same way is what lets it be
  * compared with what the browser reports.
  */
-export function declarationsAfterInRuleCascade(
-  declarations: readonly CssDeclarationEvidence[],
-): readonly CssDeclarationEvidence[] {
-  const winners = new Map<string, CssDeclarationEvidence>();
+export function declarationsAfterInRuleCascade<
+  Declaration extends CssDeclarationEvidence,
+>(
+  declarations: readonly Declaration[],
+): readonly Declaration[] {
+  const winners = new Map<string, Declaration>();
   for (const declaration of declarations) {
     const rawProperty = declaration.property.trim();
     const key = rawProperty.startsWith("--")
@@ -191,12 +201,15 @@ function normalizeDeclaration(
   if (customProperty) {
     return [{ property, value: unprioritizedValue.trim(), important }];
   }
-  const value = canonicalizeSidesValue(
-    property,
-    normalizeCssValue(unprioritizedValue),
-  );
-  return expandPositionalShorthand(property, value, important) ??
-    [{ property, value, important }];
+  const name = canonicalPropertyName(property);
+  const value = normalizeCssValue(unprioritizedValue);
+  const longhands = expandBrowserShorthand(name, value) ??
+    [{ property: name, value }];
+  return longhands.flatMap((longhand) => {
+    const canonical = canonicalizeSidesValue(longhand.property, longhand.value);
+    return expandPositionalShorthand(longhand.property, canonical, important) ??
+      [{ property: longhand.property, value: canonical, important }];
+  });
 }
 
 /**
@@ -371,9 +384,22 @@ function canonicalizeCssTokens(value: string): string {
     }
     if (startsFunction(value, index, "url")) {
       const end = closingParenthesis(value, index + 3);
-      output += value.slice(index, end);
+      output += canonicalUrl(value.slice(index + 4, end - 1)) ??
+        value.slice(index, end);
       index = end;
       continue;
+    }
+    const gradient = gradientAt(value, index);
+    if (gradient) {
+      const open = index + gradient.name.length;
+      const end = closingParenthesis(value, open);
+      if (value[end - 1] === ")") {
+        const body = canonicalizeCssTokens(value.slice(open + 1, end - 1));
+        output += `${gradient.name.toLowerCase()}(` +
+          `${canonicalGradientArguments(gradient.kind, body)})`;
+        index = end;
+        continue;
+      }
     }
     const colorFunction = startsFunction(value, index, "rgba")
       ? 4
@@ -420,6 +446,34 @@ function canonicalizeQuotedText(text: string): string {
   if (text.length < 2 || text[0] !== "'" || text.at(-1) !== "'") return text;
   const body = text.slice(1, -1);
   return body.includes('"') || body.includes("\\") ? text : `"${body}"`;
+}
+
+/**
+ * Browsers quote every URL they hand back: `url(img/a.png)` and
+ * `url('img/a.png')` both come back as `url("img/a.png")`. A URL that would
+ * need escaping to be requoted keeps the spelling it was given.
+ */
+function canonicalUrl(body: string): string | undefined {
+  const text = body.trim();
+  const quoted = /^"([^"\\]*)"$/.exec(text) ?? /^'([^'"\\]*)'$/.exec(text);
+  const target = quoted
+    ? quoted[1]
+    : /^[^"'\\\s()]*$/.test(text)
+    ? text
+    : undefined;
+  return target === undefined ? undefined : `url("${target}")`;
+}
+
+function gradientAt(
+  value: string,
+  start: number,
+):
+  | { readonly name: string; readonly kind: "linear" | "radial" | "conic" }
+  | undefined {
+  if (isIdentifierCharacter(value[start - 1] ?? "")) return undefined;
+  const name = /^[A-Za-z-]+(?=\()/.exec(value.slice(start))?.[0];
+  const kind = name === undefined ? undefined : gradientKind(name);
+  return name === undefined || kind === undefined ? undefined : { name, kind };
 }
 
 function closingQuote(value: string, start: number): number {
@@ -615,7 +669,8 @@ const SLASHED_SIDES_PROPERTIES = new Set([
  * stylesheet tends to write every side out, while the browser hands back the
  * shortest spelling. Both are read here as the sides they set.
  */
-function canonicalizeSidesValue(property: string, value: string): string {
+function canonicalizeSidesValue(property: string, written: string): string {
+  const value = canonicalLonghandValue(property, written);
   if (PROPERTY_NAMING_VALUES.has(property)) {
     return canonicalizePropertyNamingValue(value);
   }
@@ -756,7 +811,10 @@ function canonicalizeShadowValue(value: string): string {
 function expandSides(value: string, sides: 2 | 4): string | undefined {
   const parts = splitTopLevel(value, " ");
   if (parts.length < 1 || parts.length > sides) return undefined;
-  if (parts.some((part) => part.includes(","))) return undefined;
+  // A list is not a set of sides; the commas inside `rgb(1, 2, 3)` are.
+  if (parts.some((part) => splitTopLevel(part, ",").length > 1)) {
+    return undefined;
+  }
   const [first, second, third, fourth] = parts;
   if (sides === 2) {
     return `${first} ${second ?? first}`;
@@ -767,36 +825,6 @@ function expandSides(value: string, sides: 2 | 4): string | undefined {
     third ?? first,
     fourth ?? second ?? first,
   ].join(" ");
-}
-
-/** Splits on a separator that sits outside quotes and parentheses. */
-function splitTopLevel(value: string, separator: string): string[] {
-  const parts: string[] = [];
-  let current = "";
-  let quote = "";
-  let depth = 0;
-  for (const character of value) {
-    if (quote) {
-      current += character;
-      if (character === quote) quote = "";
-      continue;
-    }
-    if (character === '"' || character === "'") {
-      quote = character;
-      current += character;
-      continue;
-    }
-    if (character === "(") depth += 1;
-    if (character === ")") depth -= 1;
-    if (character === separator && depth === 0) {
-      if (current !== "") parts.push(current);
-      current = "";
-      continue;
-    }
-    current += character;
-  }
-  if (current !== "") parts.push(current);
-  return parts;
 }
 
 function declarationMatches(

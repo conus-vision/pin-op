@@ -9,7 +9,10 @@ import {
   SOURCE_MAP_CACHE_LIMIT,
   SourceMapLoader,
 } from "../src/sourcePlugins/sourceMapLoader.js";
-import type { StylesheetRule } from "../src/sourcePlugins/stylesheetAst.js";
+import {
+  StylesheetAstCache,
+  type StylesheetRule,
+} from "../src/sourcePlugins/stylesheetAst.js";
 
 const rawMap = {
   version: 3,
@@ -134,6 +137,52 @@ describe("SourceMapLoader", () => {
       mapKind: "external",
       mapText: generator.toString(),
       mapContentHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+  });
+
+  it("ties each generated declaration to where it starts in the same original", async () => {
+    const css = ".card { display: flex; color: red; gap: 1px; }";
+    const generator = new SourceMapGenerator({ file: "app.css" });
+    const map = (
+      column: number,
+      line: number,
+      source = "../src/card.scss",
+    ) => generator.addMapping({
+      generated: { line: 1, column },
+      original: { line, column: column === 0 ? 0 : 2 },
+      source,
+    });
+    map(0, 3);
+    // `display` maps into the same file, `color` into a mixin, and `gap` to
+    // two places at once.
+    map(8, 4);
+    map(23, 1, "../src/mixins.scss");
+    map(35, 5);
+    map(35, 6);
+    const rule = new StylesheetAstCache().parseText(
+      "file:///workspace/dist/app.css",
+      "css",
+      css,
+    ).rules[0]!;
+
+    const resolved = await new SourceMapLoader().resolveSelectorPrelude(
+      "file:///workspace/dist/app.css",
+      `${css}\n/*# sourceMappingURL=app.css.map */`,
+      rule,
+      memoryWorkspace({
+        "file:///workspace/dist/app.css.map": generator.toString(),
+      }),
+      "http://localhost:4173/dist/app.css",
+    );
+
+    expect(rule.writtenDeclarations.map((entry) => entry.start)).toEqual([
+      { line: 0, character: 8 },
+      { line: 0, character: 23 },
+      { line: 0, character: 35 },
+    ]);
+    expect(resolved).toMatchObject({
+      kind: "mapped",
+      declarationMappings: [{ declarationIndex: 0, line: 4, column: 2 }],
     });
   });
 
@@ -798,6 +847,7 @@ function generatedRuleAt(
       declarations: [],
       conditions: [],
     },
+    writtenDeclarations: [],
   };
 }
 

@@ -253,13 +253,18 @@ as the file.
 
 A stylesheet and a browser spell the same declaration differently, and both
 sides are read the same way before they are compared: colours, zero lengths,
-numbers and quote style settle on one spelling; a shorthand is read as the parts
-it sets, so written-out sides and `inset: 0` agree; a shadow is read by its
-offsets and colour; a property declared twice is read the way the browser keeps
-it; a value that names properties is read in the property names a browser
-reports and without a `0s` delay. A file may also carry the prefixed fallbacks a
-browser drops, and a bare number matches the pixels a quirks-mode browser made
-of it. Everything the browser did report must still match exactly.
+numbers, quote style and `url()` quoting settle on one spelling; a shorthand is
+read as the longhands it sets with every part it leaves out at its initial
+value, so written-out sides and `inset: 0` agree, and so do the file's
+`transition: transform 0.2s ease` and the `transform 0.2s` both engines report
+for it; a gradient leaves out its default direction, shape and centre; a shadow
+is read by its offsets and colour; a property declared twice is read the way the
+browser keeps it; a legacy name both engines alias is read as the property it
+names; a value that names properties is read in the property names a browser
+reports. A file may also carry the prefixed fallbacks a browser drops, and a
+bare number matches the pixels a quirks-mode browser made of it. A value that
+cannot be read with certainty is compared as written, and everything the
+browser did report must still match exactly.
 
 The CSS resolver prefers exact source position or CSSOM rule-path evidence. A
 workspace-bound CSS source miss never fingerprint-matches an unrelated active
@@ -281,6 +286,14 @@ identified by the map and by what it declares directly, which must be present in
 what the browser reported; a rule that can state its own selector is still held
 to it. A mixin body, an `@each` loop and the rest of a preprocessor's own
 constructs are ways of writing a rule, not cascade conditions.
+
+What a preprocessor rule declares directly is compared as written, except a
+value the preprocessor computes -- a variable, an interpolation, a call Sass
+evaluates -- which is never the text the browser reports. The compiler maps each
+declaration it writes to the declaration it compiled, so such a value is read
+as the generated declaration whose start maps exactly onto its own, under the
+same property and priority; without that mapping it stays as written and the
+rule keeps its generated CSS origin.
 
 Plugins return semantic ranges. Core owns all editor UI. The authoring contract
 is in [source-plugin-authoring.md](source-plugin-authoring.md).
