@@ -3,7 +3,7 @@
   "publisher": "conus-vision",
   "displayName": "Pin-op",
   "description": "Highlights styles and source code in your IDE for the selected DOM element. Pin-op by Volodymyr Moskvin. (c) 2026 Conus Vision.",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "license": "MIT",
   "repository": "https://github.com/conus-vision/pin-op",
   "homepage": "https://pin-op.conus.vision",
@@ -19,6 +19,7 @@
     "css",
     "scss",
     "php",
+    "javascript",
     "source maps",
     "websocket"
   ],
@@ -76,7 +77,7 @@
     "viewsWelcome": [
       {
         "view": "pin-op.applicableRules",
-        "contents": "Select an element in Firefox or Chrome to list the CSS or SCSS that applies to it here.\n\nPin-op needs its matching browser half:\n[Install for Chrome](https://chromewebstore.google.com/detail/pkfpamadjoolcfkaadnleagmhbapepci)\n[Install for Firefox](https://addons.mozilla.org/addon/pin-op/)\n\nThen click the Pin-op status bar item to copy this window's link code and paste it into the Pin-op DevTools panel.\n\nSupport for IDEs other than VS Code is in development."
+        "contents": "Select an element in Firefox or Chrome to list the CSS, SCSS, PHP, or JavaScript in the active file that applies to it here.\n\nPin-op needs its matching browser half:\n[Install for Chrome](https://chromewebstore.google.com/detail/pkfpamadjoolcfkaadnleagmhbapepci)\n[Install for Firefox](https://addons.mozilla.org/addon/pin-op/)\n\nThen click the Pin-op status bar item to copy this window's link code and paste it into the Pin-op DevTools panel.\n\nSupport for IDEs other than VS Code is in development."
       }
     ],
     "colors": [
@@ -130,7 +131,7 @@
   "scripts": {
     "vscode:prepublish": "pnpm run build",
     "package": "node ./package-vsix.mjs",
-    "smoke:vsix": "node ./smoke-installed-vsix.mjs ../../artifacts/pin-op-vscode-0.4.2.vsix",
+    "smoke:vsix": "node ./smoke-installed-vsix.mjs ../../artifacts/pin-op-vscode-0.5.0.vsix",
     "build": "pnpm run typecheck && node ./esbuild.mjs",
     "test": "pnpm --filter @pin-op/protocol build && pnpm --filter @pin-op/bridge build && vitest run --exclude \"test/integration/**\"",
     "test:integration": "pnpm run build && pnpm --filter pin-op-source-plugin-fixture build && vscode-test --label sourcePluginApi",

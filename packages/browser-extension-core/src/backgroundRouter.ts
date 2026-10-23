@@ -69,6 +69,7 @@ import {
   parsePanelSourceOpenCommand,
   parsePanelSourceNavigateCommand,
   parsePanelTabSettingsCommand,
+  parsePanelViewportResizeCommand,
   type ContentSessionId,
   type InspectRepublishRequest,
   type PanelInspectPort,
@@ -76,6 +77,7 @@ import {
   type PanelRulesOpenCommand,
   type PanelSourceOpenCommand,
   type PanelSourceNavigateCommand,
+  type PanelViewportResizeCommand,
 } from "./inspectPortProtocol.js";
 import { PanelSessionTransport } from "./panelSessionTransport.js";
 import {
@@ -236,6 +238,15 @@ export interface BackgroundRouterOptions {
   readonly expectedPanelUrl?: string;
   readonly maxPanelPorts?: number;
   readonly getTab: (tabId: number) => Promise<BackgroundTab | undefined>;
+  /**
+   * Resizes the window holding a tab so the tab's viewport is the given size.
+   * Without it a Rules `@media` preview request is ignored.
+   */
+  readonly resizeTabViewport?: (
+    tabId: number,
+    windowId: number,
+    size: { readonly width?: number; readonly height?: number },
+  ) => Promise<unknown>;
   readonly coordinator: BackgroundWindowCoordinator;
   readonly tabRefreshCoordinator: BackgroundTabRefreshCoordinator;
   readonly contentRefreshCoordinator?: BackgroundContentRefreshRuntime;
@@ -537,6 +548,7 @@ export class BackgroundRouter {
   private readonly expectedPanelUrl: string | undefined;
   private readonly maxPanelPorts: number;
   private readonly getTab: BackgroundRouterOptions["getTab"];
+  private readonly resizeTabViewport: BackgroundRouterOptions["resizeTabViewport"];
   private readonly coordinator: BackgroundWindowCoordinator;
   private readonly tabRefreshCoordinator: BackgroundTabRefreshCoordinator;
   private readonly contentRefreshCoordinator: BackgroundContentRefreshRuntime;
@@ -618,6 +630,7 @@ export class BackgroundRouter {
     this.expectedPanelUrl = options.expectedPanelUrl;
     this.maxPanelPorts = validPanelPortLimit(options.maxPanelPorts);
     this.getTab = options.getTab;
+    this.resizeTabViewport = options.resizeTabViewport;
     this.coordinator = options.coordinator;
     this.tabRefreshCoordinator = options.tabRefreshCoordinator;
     this.contentRefreshCoordinator = options.contentRefreshCoordinator ??
@@ -2702,6 +2715,11 @@ export class BackgroundRouter {
       }
       return;
     }
+    const viewportResize = parsePanelViewportResizeCommand(message);
+    if (viewportResize) {
+      this.queueViewportResize(record, activationToken, viewportResize);
+      return;
+    }
     if (record.lastWindowState === "incompatible") {
       const request = parseInspectPortRequest(message);
       if (request) {
@@ -2822,6 +2840,48 @@ export class BackgroundRouter {
     record.inspectCommandTail = operation.catch((error) => {
       this.reportError(error);
       this.postInspectFailure(record, request.requestId);
+    });
+  }
+
+  /**
+   * Browser-local and IDE-independent: a panel may resize only the window that
+   * currently holds its own bound tab.
+   */
+  private queueViewportResize(
+    record: PanelPortRecord,
+    activationToken: object,
+    command: PanelViewportResizeCommand,
+  ): void {
+    const resizeTabViewport = this.resizeTabViewport;
+    if (!resizeTabViewport) return;
+    const operation = record.inspectCommandTail.then(async () => {
+      const binding = this.bindings.get(record.channel);
+      if (
+        !binding ||
+        !record.registration ||
+        !this.isCurrentActivation(record, activationToken, binding)
+      ) {
+        return;
+      }
+      const refreshed = await this.refreshPanelBinding(
+        binding,
+        record,
+        activationToken,
+      );
+      if (
+        !refreshed ||
+        !record.registration ||
+        !this.isCurrentActivation(record, activationToken, refreshed)
+      ) {
+        return;
+      }
+      await resizeTabViewport(refreshed.tabId, refreshed.windowId, {
+        ...(command.width === undefined ? {} : { width: command.width }),
+        ...(command.height === undefined ? {} : { height: command.height }),
+      });
+    });
+    record.inspectCommandTail = operation.catch((error) => {
+      this.reportError(error);
     });
   }
 
@@ -3092,6 +3152,7 @@ export class BackgroundRouter {
           inspectMessageId: command.inspectMessageId,
           rulesGeneration: command.rulesGeneration,
           openAuthorityId: command.openAuthorityId,
+          ...(command.declaration ? { declaration: command.declaration } : {}),
         });
       } catch (error) {
         this.reportError(error);

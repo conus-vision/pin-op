@@ -15,6 +15,7 @@ import {
   canonicalRulesSourceUri,
   type RulesSourceSnapshotWorkspace,
 } from "../sourcePlugins/sourceWorkspace.js";
+import { declarationValuePosition } from "./declarationValuePosition.js";
 import {
   RulesOpenAuthorityRegistry,
   type StoredRuleOpenAuthority,
@@ -196,11 +197,19 @@ export class RulesSourceController<
       return;
     }
 
+    // A clicked declaration lands on its value, ready to be edited; the rule
+    // itself is the answer whenever that value is not written in the rule.
+    const valuePosition = message.declaration === undefined
+      ? undefined
+      : declarationValuePosition(opened, authority.range, message.declaration);
     try {
       if (!this.isOpenCurrent(openOperation)) return;
-      this.host.setPrimaryCursor(editor, authority.range.start);
+      this.host.setPrimaryCursor(editor, valuePosition ?? authority.range.start);
       if (!this.isOpenCurrent(openOperation)) return;
-      this.host.revealRange(editor, authority.range);
+      this.host.revealRange(
+        editor,
+        valuePosition ? { start: valuePosition, end: valuePosition } : authority.range,
+      );
     } catch {
       if (!this.isOpenCurrent(openOperation)) return;
       await this.failOpen(authority, "rules-source-open-failed");

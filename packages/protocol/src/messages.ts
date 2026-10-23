@@ -586,6 +586,29 @@ export function createRulesSourcesMessageSchema(
 
 export const RulesSourcesMessageSchema = createRulesSourcesMessageSchema();
 
+/**
+ * The declaration a Rules property click names inside the rule the opaque
+ * authority already identifies: its property name and which occurrence of that
+ * name it is, counted from the end of the rule's own declaration list (0 is the
+ * last, the one a browser keeps). It carries no position; the IDE finds the
+ * value inside the private range it holds.
+ */
+export const RulesOpenDeclarationSchema = z
+  .object({
+    property: z
+      .string()
+      .min(1)
+      .max(RULES_SOURCES_LIMITS.propertyNameLength)
+      .regex(/^-{0,2}[A-Za-z_][A-Za-z0-9_-]*$/u, "rules open property must be a CSS identifier"),
+    occurrence: z
+      .number()
+      .int()
+      .min(0)
+      .max(INSPECT_LIMITS.declarationsPerRule - 1),
+  })
+  .strict()
+  .transform((declaration): DeepReadonly<typeof declaration> => declaration);
+
 const rulesOpenMessageObjectSchema = z
   .object({
     protocolVersion: z.literal(PROTOCOL_VERSION),
@@ -598,6 +621,7 @@ const rulesOpenMessageObjectSchema = z
       .string()
       .min(1)
       .max(RULES_SOURCES_LIMITS.authorityIdLength),
+    declaration: RulesOpenDeclarationSchema.optional(),
     metadata: EmptyMetadataSchema,
   })
   .strict();
@@ -1081,6 +1105,7 @@ export type RulesSourceConfidence = z.infer<
 export type RulesSourceDocument = z.infer<typeof RulesSourceDocumentSchema>;
 export type RulesSource = z.infer<typeof RulesSourceSchema>;
 export type RulesSourcesMessage = z.infer<typeof RulesSourcesMessageSchema>;
+export type RulesOpenDeclaration = z.infer<typeof RulesOpenDeclarationSchema>;
 export type RulesOpenMessage = z.infer<typeof RulesOpenMessageSchema>;
 export type PageRefreshMode = z.infer<typeof PageRefreshModeSchema>;
 export type PageRefreshMessage = z.infer<typeof PageRefreshMessageSchema>;

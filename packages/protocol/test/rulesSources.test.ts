@@ -62,6 +62,7 @@ describe("protocol v7 correlated rule source messages", () => {
       unresolvedRules: 256,
       labelLength: 128,
       authorityIdLength: 128,
+      propertyNameLength: 256,
       line: 10_000_000,
       column: 1_000_000,
     });
@@ -234,6 +235,29 @@ describe("protocol v7 correlated rule source messages", () => {
       expect(() => RulesOpenMessageSchema.parse(
         rulesOpenMessage({ [forbidden]: forbidden }),
       )).toThrow();
+    }
+  });
+
+  it("carries a clicked declaration by name and occurrence only", () => {
+    const message = rulesOpenMessage({
+      declaration: { property: "margin-top", occurrence: 1 },
+    });
+    expect(RulesOpenMessageSchema.parse(message)).toEqual(message);
+    expect(RulesOpenMessageSchema.parse(rulesOpenMessage({
+      declaration: { property: "--brand-color", occurrence: 0 },
+    })).declaration?.property).toBe("--brand-color");
+    for (const declaration of [
+      { property: "", occurrence: 0 },
+      { property: "color: red", occurrence: 0 },
+      { property: "color", occurrence: -1 },
+      { property: "color", occurrence: 1.5 },
+      { property: "color", occurrence: 128 },
+      { property: "color", occurrence: 0, line: 3 },
+      { property: "color" },
+    ]) {
+      expect(RulesOpenMessageSchema.safeParse(
+        rulesOpenMessage({ declaration }),
+      ).success).toBe(false);
     }
   });
 

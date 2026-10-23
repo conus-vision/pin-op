@@ -149,10 +149,10 @@ the VS Code status bar.
 Use candidates from one trusted build or draft release and compare each file to
 that draft's `SHA256SUMS` before installing:
 
-- `pin-op-vscode-0.4.2.vsix`;
-- `pin-op-chrome-0.4.2.zip`;
-- `pin-op-firefox-0.4.2.zip` for a Firefox Temporary Add-on;
-- a Mozilla-signed `pin-op-firefox-0.4.2.xpi`, when available, for a
+- `pin-op-vscode-0.5.0.vsix`;
+- `pin-op-chrome-0.5.0.zip`;
+- `pin-op-firefox-0.5.0.zip` for a Firefox Temporary Add-on;
+- a Mozilla-signed `pin-op-firefox-0.5.0.xpi`, when available, for a
   persistent Firefox Stable installation.
 
 Install the VSIX with **Extensions > Install from VSIX...**. Open a local
@@ -161,19 +161,19 @@ must show a five-digit port and two-digit PIN, such as `48735 07`; clicking it
 copies the seven digits without the space.
 
 For Chrome/Chromium 116 or newer, extract
-`pin-op-chrome-0.4.2.zip`, open `chrome://extensions`, enable
+`pin-op-chrome-0.5.0.zip`, open `chrome://extensions`, enable
 Developer mode, choose **Load unpacked**, and select the extracted directory
-containing `manifest.json`. Confirm version `0.4.2`, no extension-card errors,
+containing `manifest.json`. Confirm version `0.5.0`, no extension-card errors,
 the Pin-op DevTools panel, and persistence after a complete browser
 restart.
 
 Firefox Stable supports the unsigned
-`pin-op-firefox-0.4.2.zip` only as a temporary check. Extract it,
+`pin-op-firefox-0.5.0.zip` only as a temporary check. Extract it,
 open `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on**,
 and select its `manifest.json`. Confirm the Pin-op panel and version
-`0.4.2`; expect the Temporary Add-on to disappear after Firefox exits. For a
+`0.5.0`; expect the Temporary Add-on to disappear after Firefox exits. For a
 persistent check, use **Install Add-on From File...** with the exact
-Mozilla-signed `pin-op-firefox-0.4.2.xpi`, then restart every Firefox
+Mozilla-signed `pin-op-firefox-0.5.0.xpi`, then restart every Firefox
 process and confirm it remains enabled. Do not treat the unsigned ZIP as
 signed-XPI evidence.
 
@@ -264,7 +264,7 @@ reconnect/cleanup as described in the
 These remain manual acceptance steps. Build and load the ordinary Chrome and
 Firefox artifacts; both register the shared Inspector by default.
 
-1. Confirm the new Inspector shows DOM Tree and Rules with no visible Source tab.
+1. Confirm the Inspector shows the DOM Tree, Rules, and the Source tab.
 2. Verify exact CSS, inline-map SCSS, external-map SCSS, nested SCSS, and a
    selector/declaration split map. Each current origin label must identify only
    the verified generated CSS or exact original SCSS block.
@@ -320,7 +320,7 @@ corepack pnpm package
 git diff --check
 ```
 
-The package command creates and verifies the `0.4.2` VSIX, Chrome ZIP,
+The package command creates and verifies the `0.5.0` VSIX, Chrome ZIP,
 unsigned Firefox ZIP, Firefox source ZIP, and `SHA256SUMS`.
 
 The packaged Chrome artifact smoke is separate:
@@ -446,7 +446,7 @@ From another source-workflow shell, create one disposable profile and preserve i
 this verification run:
 
 ```powershell
-$firefoxProfile = Join-Path $env:TEMP ("pin-op-0.4.2-" + [guid]::NewGuid().ToString("N"))
+$firefoxProfile = Join-Path $env:TEMP ("pin-op-0.5.0-" + [guid]::NewGuid().ToString("N"))
 corepack pnpm exec web-ext run --source-dir extensions/firefox --firefox "C:\Program Files\Mozilla Firefox\firefox.exe" --firefox-profile "$firefoxProfile" --profile-create-if-missing --keep-profile-changes --start-url http://127.0.0.1:4173/
 ```
 
@@ -529,7 +529,8 @@ Select `.card.featured` while `src/layout.scss` is active. Confirm:
 - the immediate parent's `.layout` block is Parent;
 - all ranges include closing braces and appear in Applicable Sources;
 - the final footer uses
-  `<N> rules highlighted · Selected <S> · Parent <P>`;
+  `<N> rules highlighted · Selected <S> · Parent <P>` (a PHP or script file
+  counts `<N> matches highlighted`);
 - selecting an Applicable Sources item reveals within the already active editor.
 
 Without another browser selection:

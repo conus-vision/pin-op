@@ -1719,6 +1719,54 @@ describe("startInspectorPanelRuntime", () => {
     runtime.dispose();
   });
 
+  it("opens a clicked declaration and previews a clicked @media viewport", async () => {
+    const harness = createHarness();
+    let sourceLinkDelegate: SourceLinkDelegate | undefined;
+    const runtime = harness.start({
+      createElementsInspectorView(ownerDocument, mount, source) {
+        const view = new TestElementsInspector(ownerDocument, mount, source);
+        const bindRulesDataSource = view.bindRulesDataSource.bind(view);
+        view.bindRulesDataSource = (dataSource, delegate, pseudoStateDataSource) => {
+          sourceLinkDelegate = delegate;
+          bindRulesDataSource(dataSource, delegate, pseudoStateDataSource);
+        };
+        return view;
+      },
+    });
+    await runtime.ready;
+    const port = requiredPort(harness.ports, 0);
+    port.emitMessage({
+      type: "pin-op.inspect.started",
+      inspectMessageId: "inspect-declaration",
+      selectionRevision: 1,
+      expectedRuleRefs: ["rule-card"],
+    });
+    port.emitMessage(rulesSources("inspect-declaration", 1, "rule-card"));
+
+    sourceLinkDelegate?.openRuleOrigin("rule-card", {
+      property: "color",
+      occurrence: 0,
+    });
+    expect(lastMessage(port.sent, "pin-op.rules.open")).toEqual({
+      type: "pin-op.rules.open",
+      inspectMessageId: "inspect-declaration",
+      rulesGeneration: 1,
+      openAuthorityId: "authority-card",
+      declaration: { property: "color", occurrence: 0 },
+    });
+
+    sourceLinkDelegate?.previewMediaQuery?.("(prefers-color-scheme: dark)");
+    expect(port.sent.some((message) =>
+      isType(message, "pin-op.viewport.resize"))).toBe(false);
+    sourceLinkDelegate?.previewMediaQuery?.("screen and (max-width: 767.98px)");
+    expect(lastMessage(port.sent, "pin-op.viewport.resize")).toEqual({
+      type: "pin-op.viewport.resize",
+      width: 767,
+    });
+
+    runtime.dispose();
+  });
+
   it("renders current Source matches and opens the selected block through existing authority", async () => {
     const acceptResolution = vi.spyOn(
       SourcePaneController.prototype,

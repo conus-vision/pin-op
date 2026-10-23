@@ -27,6 +27,10 @@ import {
 import { TabRefreshCoordinator } from "./tabRefreshCoordinator.js";
 import { TabRefreshStateStore } from "./tabRefreshStateStore.js";
 import type { RefreshExecutionCommand } from "./refreshRuntimeProtocol.js";
+import {
+  resizeTabViewport,
+  type ViewportResizeApi,
+} from "./mediaQueryViewport.js";
 
 export interface BackgroundRuntimeOptions extends BackgroundInspectApi {
   readonly browserLocalInspection?: boolean;
@@ -40,6 +44,8 @@ export interface BackgroundRuntimeOptions extends BackgroundInspectApi {
     message: unknown,
   ) => Promise<unknown>;
   readonly reloadTab?: (tabId: number) => Promise<unknown>;
+  /** Window access for showing the page at a Rules `@media` viewport size. */
+  readonly viewportResize?: ViewportResizeApi;
   readonly subscribeRuntimeMessages: BackgroundRouterSubscriptions["subscribeRuntimeMessages"];
   readonly subscribeRuntimePorts: BackgroundRouterSubscriptions["subscribeRuntimePorts"];
   readonly subscribeWindowRemoved: BackgroundRouterSubscriptions["subscribeWindowRemoved"];
@@ -207,6 +213,12 @@ export function startBackgroundRuntime(
     expectedDevtoolsUrl: options.expectedDevtoolsUrl,
     expectedPanelUrl: options.expectedPanelUrl,
     getTab: options.getTab,
+    ...(options.viewportResize
+      ? {
+          resizeTabViewport: (tabId, windowId, size) =>
+            resizeTabViewport(options.viewportResize!, tabId, windowId, size),
+        }
+      : {}),
     coordinator,
     tabRefreshCoordinator,
     contentRefreshCoordinator,

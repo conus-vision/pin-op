@@ -23,6 +23,23 @@ startBackgroundRuntime({
   sendTopFrameMessage: (tabId, message) =>
     browser.tabs.sendMessage(tabId, message, { frameId: 0 }),
   reloadTab: (tabId) => browser.tabs.reload(tabId),
+  viewportResize: {
+    measureViewport: async (tabId) => {
+      const [injection] = await browser.scripting.executeScript({
+        target: { tabId },
+        func: () => ({ width: window.innerWidth, height: window.innerHeight }),
+      });
+      const size = injection?.result as { width?: unknown; height?: unknown } | undefined;
+      return typeof size?.width === "number" && typeof size.height === "number"
+        ? { width: size.width, height: size.height }
+        : undefined;
+    },
+    getWindow: async (windowId) => {
+      const window = await browser.windows.get(windowId);
+      return { width: window.width, height: window.height, state: window.state };
+    },
+    updateWindow: (windowId, update) => browser.windows.update(windowId, update),
+  },
   getTab: async (tabId) => {
     const tab = await browser.tabs.get(tabId);
     return { id: tab.id, windowId: tab.windowId };

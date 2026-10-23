@@ -1,7 +1,7 @@
 # Architecture
 
 Pin-op is a local, read-only bridge from browser DevTools inspection to
-source highlighting in VS Code. Product semver is `0.4.2`; the independent wire
+source highlighting in VS Code. Product semver is `0.5.0`; the independent wire
 protocol version is `7`.
 
 ## Components
@@ -65,7 +65,10 @@ and [derivation record](../third_party/chromium-devtools-frontend/PIN_OP_CHANGES
 are exact provenance and reproduction inputs. The default Inspector exposes the
 native DOM and Rules views plus Pin-op's Source tab. Exact current Rules origins
 show the SCSS/source label and one-based line and can send an opaque open intent
-to VS Code; unresolved generated CSS origins stay non-clickable.
+to VS Code; unresolved generated CSS origins stay non-clickable. The declarations
+of such a rule send the same intent naming the clicked property and its
+occurrence, so VS Code lands on that value; an `@media` condition that names a
+viewport size asks the background to resize the inspected tab's window to it.
 
 The Inspector path exposes structured DOM node snapshots. They carry node type
 and name, bounded attribute names and values, bounded text and comment values,
@@ -190,6 +193,28 @@ they never create an approximate SCSS target. The private full range,
 dependency hashes, workspace generation, document identity, and version remain
 IDE-owned and are revalidated around the editor host call.
 
+Rules finds the file behind a served stylesheet by its content, not by the URL's
+folders: a dev server mounts `dist/` at the root, a CMS serves a theme from deep
+inside its install, a build renames `app.css`. Every workspace `.css` file is a
+candidate. When one file shares more of the served URL's trailing path than any
+other and carries every rule reported from that URL, it is the answer and nothing
+else is read. Otherwise the workspace's stylesheets are read once per selection
+(at most 2,000 files and 64 MiB, most path-similar first, files over 2 MiB
+skipped) for the words of the reported selectors, and the eight best are parsed
+and verified. The file carrying the most reported rules exactly -- selector, every
+declaration, grouping context -- is chosen; trailing path similarity and then the
+rules' reported positions break a tie, and a tie that remains chooses nothing.
+Ranking reads an open document as the editor shows it and every other file from
+disk; it never opens a document. What a selection learns is kept for the next
+one until any workspace stylesheet changes: a remembered file is reused while it
+still carries every reported rule and no file ending more like the URL carries
+them all too, and a URL whose selectors no file mentions stays unresolved. A source map's sources are read relative to the
+chosen file on disk. One a bundler named by its own scheme (`webpack://`) or by a
+path on another machine is the `.scss` file of that name whose text is the text
+the map carries, or the one file of that name when the map carries none; only
+when no file has the name is the text looked for under any name. Source plugins
+keep the URL-based lookup below.
+
 The presenter also observes changed saves. Direct CSS settles for 150 ms.
 SCSS, Sass, and Less wait for a 750 ms quiet period within a two-second build
 window; generated CSS resets settlement to 150 ms. JavaScript, TypeScript, Vue,
@@ -199,11 +224,11 @@ Unchanged saves do not publish refreshes.
 
 ### Source Plugins
 
-Built-in CSS and SCSS resolvers use source-plugin API v3, the same versioned API
-available to separately installed VS Code extensions. API v3 also accepts
-synchronous refresh classifiers. This document-first, protocol-driven boundary
-keeps the browser independent of the IDE and permits future IDE adapters to
-implement the same v7 contract.
+Built-in CSS, SCSS, PHP, and JavaScript resolvers use source-plugin API v3, the
+same versioned API available to separately installed VS Code extensions. API v3
+also accepts synchronous refresh classifiers. This document-first,
+protocol-driven boundary keeps the browser independent of the IDE and permits
+future IDE adapters to implement the same v7 contract.
 
 Source lookup first chooses a workspace strategy. Workspace-bound resolution is
 selected when the document or stylesheet URL path begins with an open workspace

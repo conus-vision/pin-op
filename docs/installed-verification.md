@@ -1,12 +1,12 @@
 # Pin-op Installed Artifact Verification
 
 This is the terminal-free installation and acceptance runbook for the
-Pin-op `0.4.2` release candidate. Normal use has no separate Pin-op
+Pin-op `0.5.0` release candidate. Normal use has no separate Pin-op
 process: open a local project and the VS Code extension starts automatically.
 
 Pin-op `0.4.2` is published on the Visual Studio Marketplace, the Chrome Web
 Store and Firefox Add-ons, and those listings are how an ordinary user installs
-it. This runbook is for accepting a candidate build: the VS Code and Chrome
+it; `0.5.0` is the candidate this runbook accepts. This runbook is for accepting a candidate build: the VS Code and Chrome
 legs install from artifact files, and the Firefox leg installs from the listing,
 because Firefox Stable keeps only an add-on Mozilla has signed.
 
@@ -15,9 +15,9 @@ because Firefox Stable keeps only an add-on Mozilla has signed.
 Obtain all files from the repository owner or one trusted draft release and
 keep them with that draft's `SHA256SUMS`:
 
-- `pin-op-vscode-0.4.2.vsix`;
-- `pin-op-chrome-0.4.2.zip`;
-- `pin-op-firefox-0.4.2.zip`.
+- `pin-op-vscode-0.5.0.vsix`;
+- `pin-op-chrome-0.5.0.zip`;
+- `pin-op-firefox-0.5.0.zip`.
 
 The Firefox `.zip` is build and Mozilla-review input. Firefox Stable keeps only
 an add-on Mozilla has signed, which it serves from the listing, so the Firefox
@@ -73,10 +73,10 @@ local VS Code window is acceptable. Read the [privacy policy](../PRIVACY.md),
 ## Install VS Code
 
 1. Open VS Code and choose **Manage > Profiles > Create Profile**.
-2. Create an empty profile named `Pin-op 0.4.2 Candidate` and select it.
+2. Create an empty profile named `Pin-op 0.5.0 Candidate` and select it.
 3. Open Extensions, confirm no unrelated user extension is enabled, open the
    view menu, and choose **Install from VSIX...**.
-4. Select `pin-op-vscode-0.4.2.vsix`, accept the prompt, and restart VS Code
+4. Select `pin-op-vscode-0.5.0.vsix`, accept the prompt, and restart VS Code
    in the same profile.
 5. Open a local project folder. Confirm Pin-op starts automatically and
    shows a status item such as `Pin-op: 48735 07` plus a stop icon.
@@ -89,11 +89,11 @@ different bridge instance and current code.
 
 ## Install Chrome Or Chromium
 
-1. Extract `pin-op-chrome-0.4.2.zip` into a permanent candidate folder.
+1. Extract `pin-op-chrome-0.5.0.zip` into a permanent candidate folder.
 2. Open `chrome://extensions` in current Chrome/Chromium 116 or newer.
 3. Enable **Developer mode** and choose **Load unpacked**.
 4. Select the extracted folder containing `manifest.json`.
-5. Confirm the Pin-op card reports version `0.4.2` with no errors.
+5. Confirm the Pin-op card reports version `0.5.0` with no errors.
 6. Restart the complete browser and confirm the extension remains installed.
 
 ## Install Firefox Stable
@@ -104,7 +104,7 @@ against the listing, once the version under test is the one it serves.
 1. Open Firefox Stable 142 or newer.
 2. Open the Pin-op listing on addons.mozilla.org and add it to Firefox.
 3. Approve its permissions.
-4. Confirm Pin-op `0.4.2` is enabled and its version matches the candidate.
+4. Confirm Pin-op `0.5.0` is enabled and its version matches the candidate.
 5. Restart every Firefox process and confirm the add-on remains enabled.
 
 ## Default Inspector Flow
@@ -394,7 +394,7 @@ tab state, and applies only while that tab's panel participates.
 
 ## Troubleshooting
 
-- **No status code:** confirm Pin-op `0.4.2` is enabled in the candidate
+- **No status code:** confirm Pin-op `0.5.0` is enabled in the candidate
   profile, reopen the local project, and select the start icon if offline.
 - **Paste denied:** enter the same seven digits manually; spaces are optional.
 - **Link rejected:** copy the current code again from the intended VS Code
@@ -414,12 +414,12 @@ tab state, and applies only while that tab's panel participates.
 - **Firefox rejects the file:** the unsigned `.zip` cannot be installed
   persistently in Firefox Stable. Install from the Firefox Add-ons listing.
 
-## 0.4.2 Candidate Verification Record
+## 0.5.0 Candidate Verification Record
 
 Pending external release evidence:
 
 - listed add-on installation and restart in Firefox Stable;
-- installed VSIX activation and restart from the final `0.4.2` artifact;
+- installed VSIX activation and restart from the final `0.5.0` artifact;
 - unpacked Chrome/Chromium installation and restart from the final artifact;
 - complete Firefox/Chrome parity, two-window isolation, DOM-tree boundary,
   box-model overlay, Rules-origin matrix, Source tab, Auto Refresh,
@@ -428,8 +428,9 @@ Pending external release evidence:
 - checksum comparison against the final draft release;
 - privacy-reviewed screenshots and GIF evidence.
 
-No signed `0.4.2` XPI exists in the candidate evidence. Mozilla's listed channel
-serves a signed `0.4.2` to Firefox users, and that build has not been through
-this runbook. Artifact hashes are pending. Screenshots and GIF evidence remain
+No signed `0.5.0` XPI exists in the candidate evidence. Mozilla signs `0.5.0`
+when the listed submission is approved; that file is attached to the release
+only after `corepack pnpm release:verify-xpi` has matched it to the release ZIP,
+and it has not been through this runbook. Artifact hashes are pending. Screenshots and GIF evidence remain
 pending. No installed-product or external release evidence is claimed by this
 document yet.

@@ -170,6 +170,16 @@ strategy with the exact local text `Workspace-bound: <folder>` (for example,
   branches of an `if`/`else` render it for different page types - so equally
   strong candidates are all listed; beyond eight the result is reported as
   ambiguous instead of guessed.
+- JavaScript, TypeScript, JSX, and TSX resolve the active script. Pin-op lists
+  where the script refers to the element -- a `querySelector(".card")`, a
+  `getElementById("hero")`, a `classList.toggle("open")`, a `dataset` member, a
+  JSX opening tag, markup written into a string -- strongest evidence first:
+  id, then `data-*`/`aria-*`/`role` attributes, then classes. Every id, class,
+  and attribute value a literal writes must be on the element, so a selector
+  whose subject is another element, or a class the script has not added yet, is
+  not listed. Comments, regular expressions, and whatever a `${...}`
+  substitution writes are never read as a reference. Matches are `heuristic`,
+  and each element lists at most eight.
 - Compatible separately installed source plugins can resolve other active
   document types through the versioned source-plugin API.
 
@@ -200,6 +210,16 @@ block, the label upgrades atomically to that SCSS origin. Missing, invalid,
 ambiguous, stale, or outside-workspace source maps show verified generated CSS
 only, with no approximate SCSS label or authority.
 
+Rules does not map the stylesheet URL onto a workspace folder. It looks at the
+project's `.css` files and takes the one whose content carries the rules the
+browser reported from that stylesheet, so a dev server, a CMS path or a renamed
+build output does not hide the source. Between files carrying as many of them,
+the one whose path ends most like the URL wins; identical copies that nothing
+tells apart leave the rule on its generated CSS. The SCSS behind it is found
+through the source map next to that file on disk, and a map written by a bundler
+(`webpack://...`) is matched to the `.scss` file of that name whose text it
+carries.
+
 Exact CSS and source-mapped original SCSS blocks open only after an explicit
 Rules origin click. That click may switch VS Code to another verified workspace
 CSS or SCSS document using a current IDE-issued opaque authority. The IDE
@@ -212,6 +232,19 @@ The wire carries only the inspect ID, independent Rules generation, safe
 basename label and one-based start position for display, confidence, and opaque
 authority ID. No workspace URI/path, full range, document version, source-map
 path/content, or command crosses the bridge. There is no open acknowledgement.
+
+Clicking a declaration in a rule whose origin is a link opens the same block
+with the cursor at the start of that declaration's value, so it can be edited
+straight away. A longhand under a shorthand opens the shorthand the stylesheet
+wrote; a declaration the rule does not write itself, because an `@include` put it
+there, opens the rule.
+
+Clicking an `@media` condition that names a viewport width or height -- they are
+underlined -- resizes the browser window so the inspected page is shown at that
+size. A range such as `(min-width: 768px) and (max-width: 1023.98px)` is shown at
+its widest matching width, an open-ended `min-width` at the minimum, and `em` or
+`rem` lengths are read at 16 px. A maximized window is restored first, and page
+zoom is corrected for. Only the window holding the inspected tab is resized.
 
 A rule that a preprocessor wrote through a mixin has no selector of its own to
 compare, so it is identified by its source map and by what it declares directly;

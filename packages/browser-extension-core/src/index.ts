@@ -13,6 +13,15 @@ export type {
   BackgroundInspectSessionOutcome,
 } from "./backgroundInspectSession.js";
 export { startBackgroundRuntime } from "./backgroundRuntime.js";
+export {
+  resizeTabViewport,
+  viewportForMediaCondition,
+} from "./mediaQueryViewport.js";
+export type {
+  BrowserWindowBounds,
+  ViewportResizeApi,
+  ViewportSize,
+} from "./mediaQueryViewport.js";
 export type {
   BackgroundRuntime,
   BackgroundRuntimeOptions,
@@ -427,6 +436,7 @@ export {
   parsePanelPresentationSettingsCommand,
   parsePanelRulesOpenCommand,
   parsePanelSourceOpenCommand,
+  parsePanelViewportResizeCommand,
 } from "./inspectPortProtocol.js";
 export type {
   BackgroundToContentInspectPortMessage,
@@ -445,6 +455,7 @@ export type {
   PanelRulesOpenCommand,
   PanelSourceOpenCommand,
   PanelToBackgroundInspectPortMessage,
+  PanelViewportResizeCommand,
 } from "./inspectPortProtocol.js";
 export { parseLinkCode } from "./linkCode.js";
 export type { ParsedLinkCode } from "./linkCode.js";

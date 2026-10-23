@@ -3,6 +3,7 @@ import type {
   ElementsRulesRendererHost,
   MatchedStylesSnapshot,
   PseudoStateDataSource,
+  RuleOriginDeclaration,
   RuleOriginDecoration,
   SourceLinkDelegate,
 } from "../../contracts.js";
@@ -23,7 +24,13 @@ export interface ChromiumReadOnlyStylesPaneOptions {
   readonly resolveOrigin: (
     ruleRef: string,
   ) => RuleOriginDecoration | undefined;
-  readonly openOrigin: (ruleRef: string) => void;
+  /** Opens a rule's source, at one of its declarations when one is given. */
+  readonly openOrigin: (
+    ruleRef: string,
+    declaration?: RuleOriginDeclaration,
+  ) => void;
+  /** Shows the page at the viewport size an `@media` condition names. */
+  readonly previewMediaQuery?: (conditionText: string) => void;
   readonly onError: (error: unknown) => void;
 }
 
@@ -92,6 +99,7 @@ function createHost(
       mount,
       resolveOrigin: originBoundary.resolveOrigin,
       openOrigin: originBoundary.openOrigin,
+      previewMediaQuery: originBoundary.previewMediaQuery,
       onError: originBoundary.report,
     });
     assertPane(pane);
@@ -472,9 +480,17 @@ class RuleOriginBoundary {
     }
   };
 
-  public readonly openOrigin = (ruleRef: string): void => {
+  public readonly openOrigin = (
+    ruleRef: string,
+    declaration?: RuleOriginDeclaration,
+  ): void => {
     const authorityRevision = this.authorityRevision;
     const delegate = this.delegate;
+    // A declaration that cannot be named safely still opens its rule, as the
+    // origin link would, rather than swallowing the click.
+    const safeDeclaration = declaration === undefined
+      ? undefined
+      : sanitizeDeclaration(declaration);
     if (
       this.disposed ||
       typeof ruleRef !== "string" ||
@@ -496,7 +512,29 @@ class RuleOriginBoundary {
       return;
     }
     try {
-      Reflect.apply(openRuleOrigin, delegate, [ruleRef]);
+      Reflect.apply(
+        openRuleOrigin,
+        delegate,
+        safeDeclaration ? [ruleRef, safeDeclaration] : [ruleRef],
+      );
+    } catch (error) {
+      this.report(error);
+    }
+  };
+
+  public readonly previewMediaQuery = (conditionText: string): void => {
+    const delegate = this.delegate;
+    if (
+      this.disposed ||
+      !delegate ||
+      typeof conditionText !== "string" ||
+      conditionText.trim().length === 0 ||
+      conditionText.length > MEDIA_CONDITION_MAX_LENGTH
+    ) return;
+    try {
+      const previewMediaQuery = delegate.previewMediaQuery;
+      if (typeof previewMediaQuery !== "function") return;
+      Reflect.apply(previewMediaQuery, delegate, [conditionText]);
     } catch (error) {
       this.report(error);
     }
@@ -614,6 +652,25 @@ function sanitizeOrigin(origin: RuleOriginDecoration): RuleOriginDecoration {
   });
 }
 
+function sanitizeDeclaration(
+  declaration: RuleOriginDeclaration,
+): RuleOriginDeclaration | undefined {
+  try {
+    const property = declaration.property;
+    const occurrence = declaration.occurrence;
+    return typeof property === "string" &&
+        property.length <= DECLARATION_PROPERTY_MAX_LENGTH &&
+        CSS_PROPERTY_NAME.test(property) &&
+        Number.isSafeInteger(occurrence) &&
+        occurrence >= 0 &&
+        occurrence < DECLARATION_OCCURRENCE_LIMIT
+      ? Object.freeze({ property, occurrence })
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function isSafeLabel(label: unknown): label is string {
   return typeof label === "string" &&
     label.length > 0 &&
@@ -714,5 +771,9 @@ function adoptCompletion(completion: Promise<void>): Promise<void> {
 
 const EMPTY_RULE_REFS: ReadonlySet<string> = Object.freeze(new Set<string>());
 const SOURCE_LABEL_MAX_LENGTH = 128;
+const DECLARATION_PROPERTY_MAX_LENGTH = 256;
+const DECLARATION_OCCURRENCE_LIMIT = 128;
+const MEDIA_CONDITION_MAX_LENGTH = 2048;
+const CSS_PROPERTY_NAME = /^-{0,2}[A-Za-z_][A-Za-z0-9_-]*$/u;
 const FORBIDDEN_SOURCE_LABEL =
   /[\/:\\\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/u;

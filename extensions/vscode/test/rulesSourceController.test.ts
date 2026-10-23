@@ -395,6 +395,31 @@ describe("RulesSourceController", () => {
     ]);
   });
 
+  it("lands a clicked declaration on its value and falls back to the rule", async () => {
+    const harness = controllerHarness();
+    await harness.controller.acceptInspect(inspect("inspect-1", "rule-a"));
+    const source = harness.publications[0]!.sources[0]!;
+
+    await harness.controller.open({
+      ...openMessage(source.openAuthorityId),
+      declaration: { property: "color", occurrence: 0 },
+    });
+    await harness.controller.open({
+      ...openMessage(source.openAuthorityId),
+      declaration: { property: "margin", occurrence: 0 },
+    });
+
+    // ".card { color: red; }" -- the value starts after "color: ".
+    expect(harness.cursorSets).toEqual([
+      { line: 0, character: 15 },
+      { line: 0, character: 0 },
+    ]);
+    expect(harness.revealed).toEqual([
+      { start: { line: 0, character: 15 }, end: { line: 0, character: 15 } },
+      ruleRange(),
+    ]);
+  });
+
   it("lets only the newest concurrent open set the cursor and reveal", async () => {
     const firstShown = deferred<RulesEditor>();
     const secondRange: SourceRange = {

@@ -2,10 +2,14 @@ import {
   RESOLUTION_LIMITS,
   RULES_SOURCES_LIMITS,
   RulesSourcesMessageSchema,
+  type RulesOpenDeclaration,
   type RulesSourcesMessage,
 } from "@pin-op/protocol";
 import { parseRulesSourcesProtocolData } from "./protocolDataSnapshot.js";
-import type { PanelRulesOpenCommand } from "./inspectPortProtocol.js";
+import {
+  parseRulesOpenDeclaration,
+  type PanelRulesOpenCommand,
+} from "./inspectPortProtocol.js";
 
 export type RulesOriginState =
   | "pending"
@@ -129,16 +133,24 @@ export class RulesSourcesController {
     return this.state;
   }
 
-  public open(ruleRef: string): void {
+  /**
+   * Opens the rule's source. With a declaration the IDE places the cursor on
+   * that declaration's value inside the same rule, so it can be edited at once.
+   */
+  public open(ruleRef: string, declaration?: RulesOpenDeclaration): void {
     if (this.disposed || this.state !== "ready") return;
     const authority = this.authority;
     const source = authority?.origins.get(ruleRef);
     if (!authority || !source) return;
+    const safeDeclaration = declaration === undefined
+      ? undefined
+      : parseRulesOpenDeclaration(declaration);
     this.dispatch(Object.freeze({
       type: "pin-op.rules.open",
       inspectMessageId: authority.inspectMessageId,
       rulesGeneration: authority.rulesGeneration,
       openAuthorityId: source.openAuthorityId,
+      ...(safeDeclaration ? { declaration: safeDeclaration } : {}),
     }));
   }
 

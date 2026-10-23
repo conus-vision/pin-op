@@ -29,6 +29,17 @@ export interface RulesSourceSnapshotWorkspace extends SourceWorkspace {
     maxBytes: number,
     signal?: AbortSignal,
   ): Promise<RulesSourceSnapshot>;
+  /**
+   * A file's current text, read only to rank it among the workspace's
+   * stylesheets and never to resolve anything from it. Rules reads every
+   * stylesheet in the workspace this way, so it must not open a document for
+   * a file that is not open already. Without it, Rules ranks with snapshots.
+   */
+  readRulesRankingText?(
+    uri: string,
+    maxBytes: number,
+    signal?: AbortSignal,
+  ): Promise<string>;
 }
 
 export class RulesSourceSnapshotLimitError extends Error {
@@ -223,6 +234,60 @@ export class VsCodeSourceWorkspace implements SourceWorkspace {
       signal,
     );
     return rulesSourceSnapshot(document, uri, maxBytes, signal);
+  }
+
+  /**
+   * Opening a document is not free of consequences: it builds a model,
+   * announces the document to every extension, and has language servers
+   * validate it into the Problems panel. Rules reads every stylesheet in the
+   * workspace to rank them, so a file that is not open is read from disk
+   * instead; one that is open is read as the user sees it, unsaved edits and
+   * all. Only the few files Rules settles on are opened, as snapshots.
+   */
+  public async readRulesRankingText(
+    uri: string,
+    maxBytes: number,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    if (!this.isWorkspaceUri(uri)) {
+      throw new Error(`URI is outside the workspace: ${uri}`);
+    }
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+      throw new Error("Rules source byte limit is invalid");
+    }
+    const parsed = this.host.parseUri(filePathUri(uri) ?? uri);
+    if (signal?.aborted) throw workspaceAbortError();
+    const openDocument = this.host.getOpenTextDocument?.(parsed);
+    if (openDocument) {
+      if (!sameCanonicalUri(openDocument.uri.toString(), uri)) {
+        throw new Error("Rules ranking document is invalid");
+      }
+      const text = openDocument.getText();
+      if (utf8ByteLength(text) > maxBytes) {
+        throw new RulesSourceSnapshotLimitError();
+      }
+      return text;
+    }
+    const stat = await raceWithAbort(
+      Promise.resolve().then(() => this.host.stat(parsed)),
+      signal,
+    );
+    const declaredSize = declaredFileSize(stat);
+    if (declaredSize === undefined) {
+      throw new Error("Rules source declared size is unavailable");
+    }
+    if (declaredSize > maxBytes) {
+      throw new RulesSourceSnapshotLimitError();
+    }
+    const content = await raceWithAbort(
+      Promise.resolve().then(() => this.host.readFile(parsed)),
+      signal,
+    );
+    if (content.byteLength > maxBytes) {
+      throw new RulesSourceSnapshotLimitError();
+    }
+    if (signal?.aborted) throw workspaceAbortError();
+    return new TextDecoder().decode(content);
   }
 
   public async resolveSourceUri(

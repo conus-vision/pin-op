@@ -156,11 +156,11 @@ export class PhpSourcePlugin implements SourcePlugin {
     for (const target of context.selection.targets) {
       if (context.signal.aborted) return abortedResult();
       if (instrumentedRoles.has(target.role)) continue;
+      // A target without DOM identity has nothing to look for. `no-facts` is
+      // the host's verdict on the whole selection -- the registry refuses it
+      // from a plugin -- so such a target just contributes no matches.
       const identity = targetDomIdentity(target);
-      if (!identity) {
-        failures.add("no-facts");
-        continue;
-      }
+      if (!identity) continue;
       const outcome = findTemplateElement(parsed, identity);
       if (outcome.kind === "ambiguous") {
         failures.add("rule-match-ambiguous");
@@ -488,7 +488,6 @@ function failureStatus(failures: ReadonlySet<ResolutionStatus>): ResolutionStatu
     "source-not-active-document",
     "source-not-found",
     "rule-match-ambiguous",
-    "no-facts",
     "no-rule-match",
   ] as const) {
     if (failures.has(status)) return status;

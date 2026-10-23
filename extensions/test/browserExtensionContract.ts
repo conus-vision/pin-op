@@ -166,6 +166,13 @@ export function createBrowserAdapterHarness() {
       },
       windows: {
         onRemoved: windowRemoved,
+        get: vi.fn(async (windowId: number) => ({
+          id: windowId,
+          width: 1216,
+          height: 800,
+          state: "normal",
+        })),
+        update: vi.fn(async (_windowId: number, _update: unknown) => undefined),
       },
       devtools: {
         inspectedWindow: { tabId: 91 },
@@ -231,6 +238,7 @@ export function describeBrowserAdapterContract(
         "subscribeTabRemoved",
         "subscribeTabUpdated",
         "subscribeWindowRemoved",
+        "viewportResize",
       ]);
       expect(options.expectedDevtoolsUrl).toBe(
         `${contract.extensionOrigin}/dist/devtools.html`,
@@ -269,6 +277,24 @@ export function describeBrowserAdapterContract(
       );
       await callAsync(options.reloadTab, 91);
       expect(harness.browser.tabs.reload).toHaveBeenCalledWith(91);
+      const viewportResize = options.viewportResize as Record<string, unknown>;
+      harness.browser.scripting.executeScript.mockResolvedValueOnce([
+        { result: { width: 1200, height: 700 } },
+      ] as never);
+      await expect(callAsync(viewportResize.measureViewport, 91)).resolves
+        .toEqual({ width: 1200, height: 700 });
+      expect(harness.browser.scripting.executeScript).toHaveBeenLastCalledWith(
+        expect.objectContaining({ target: { tabId: 91 } }),
+      );
+      await expect(callAsync(viewportResize.getWindow, 17)).resolves.toEqual({
+        width: 1216,
+        height: 800,
+        state: "normal",
+      });
+      await callAsync(viewportResize.updateWindow, 17, { width: 616 });
+      expect(harness.browser.windows.update).toHaveBeenCalledWith(17, {
+        width: 616,
+      });
       await expect(callAsync(options.getTab, 91)).resolves.toEqual({
         id: 91,
         windowId: 17,

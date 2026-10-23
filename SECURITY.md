@@ -4,11 +4,12 @@
 
 | Version | Status |
 | --- | --- |
+| 0.5.x | Supported. |
 | 0.4.x | Supported. |
 | Earlier versions | Unsupported. |
 
 The `0.4.2` extensions are published on the Visual Studio Marketplace, the
-Chrome Web Store, and Firefox Add-ons. Name the installed extension versions
+Chrome Web Store, and Firefox Add-ons, and `0.5.0` is being prepared for them. Name the installed extension versions
 when reporting or reproducing an issue, or the exact source commit when the
 build came from this repository.
 

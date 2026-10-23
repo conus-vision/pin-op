@@ -42,6 +42,7 @@ describe("resolution presenter", () => {
         selectedMatchCount: 2,
         parentMatchCount: 1,
         inaccessibleStylesheetCount: 2,
+        document: { label: "app.css", languageId: "css" },
       }),
     );
 
@@ -51,6 +52,27 @@ describe("resolution presenter", () => {
       detailText: "Selected 2 · Parent 1 · 2 inaccessible stylesheets",
       tone: "success",
     });
+  });
+
+  it("counts template and script matches as matches, not rules", () => {
+    for (const [languageId, text] of [
+      ["scss", "2 rules highlighted"],
+      ["php", "2 matches highlighted"],
+      ["typescriptreact", "2 matches highlighted"],
+    ] as const) {
+      expect(presentResolution(resolution({
+        status: "matched",
+        selectedMatchCount: 1,
+        parentMatchCount: 1,
+        document: { label: "file", languageId },
+      })).statusText).toBe(text);
+    }
+    expect(presentResolution(resolution({
+      status: "matched",
+      selectedMatchCount: 1,
+      parentMatchCount: 0,
+      document: { label: "app.js", languageId: "javascript" },
+    })).statusText).toBe("1 match highlighted");
   });
 
   it("adds the inaccessible count to a no-facts footer", () => {
@@ -221,6 +243,7 @@ describe("resolution presenter", () => {
       resolution({
         selectedMatchCount: 2,
         parentMatchCount: 1,
+        document: { label: "app.css", languageId: "css" },
       }),
     );
 

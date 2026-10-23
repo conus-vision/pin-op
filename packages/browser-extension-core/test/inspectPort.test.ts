@@ -11,6 +11,7 @@ import {
   parsePanelPresentationSettingsCommand,
   parsePanelInspectStartedState,
   parsePanelRulesOpenCommand,
+  parsePanelViewportResizeCommand,
   parsePanelRulesSourcesInvalidatedState,
   parsePanelSourceOpenCommand,
   parsePanelSourceNavigateCommand,
@@ -289,6 +290,50 @@ describe("panel inspect transport", () => {
       [],
     ]) {
       expect(parsePanelRulesOpenCommand(candidate)).toBeUndefined();
+    }
+  });
+
+  it("parses a Rules open that names one clicked declaration", () => {
+    const command = {
+      type: "pin-op.rules.open",
+      inspectMessageId: "inspect-1",
+      rulesGeneration: 2,
+      openAuthorityId: "authority-1",
+      declaration: { property: "padding-left", occurrence: 0 },
+    };
+    expect(parsePanelRulesOpenCommand(command)).toEqual(command);
+    for (const declaration of [
+      { property: "padding-left" },
+      { property: "a b", occurrence: 0 },
+      { property: "color", occurrence: 1000 },
+      { property: "color", occurrence: 0, range: [1, 2] },
+      "color",
+      null,
+    ]) {
+      expect(parsePanelRulesOpenCommand({ ...command, declaration }))
+        .toBeUndefined();
+    }
+  });
+
+  it("parses only a bounded viewport resize", () => {
+    expect(parsePanelViewportResizeCommand({
+      type: "pin-op.viewport.resize",
+      width: 600,
+    })).toEqual({ type: "pin-op.viewport.resize", width: 600 });
+    expect(parsePanelViewportResizeCommand({
+      type: "pin-op.viewport.resize",
+      width: 768,
+      height: 500,
+    })).toEqual({ type: "pin-op.viewport.resize", width: 768, height: 500 });
+    for (const candidate of [
+      { type: "pin-op.viewport.resize" },
+      { type: "pin-op.viewport.resize", width: 99 },
+      { type: "pin-op.viewport.resize", width: 16_385 },
+      { type: "pin-op.viewport.resize", width: 600.5 },
+      { type: "pin-op.viewport.resize", width: 600, windowId: 3 },
+      { type: "pin-op.viewport.resize", height: "500" },
+    ]) {
+      expect(parsePanelViewportResizeCommand(candidate)).toBeUndefined();
     }
   });
 

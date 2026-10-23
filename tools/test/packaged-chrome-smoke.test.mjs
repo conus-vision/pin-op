@@ -122,7 +122,7 @@ function createArchive(
     Buffer.from(
       JSON.stringify({
         name: "Pin-op",
-        version: "0.4.2",
+        version: "0.5.0",
         manifest_version: 3,
         background: { service_worker: "dist/background.js" },
       }),
@@ -1294,7 +1294,7 @@ test("recognizes Pin-op by the manifest exposed inside its worker", () => {
   assert.equal(
     isProductManifest({
       name: "Pin-op",
-      version: "0.4.2",
+      version: "0.5.0",
       manifest_version: 3,
       background: { service_worker: "dist/background.js" },
     }),
@@ -1303,7 +1303,7 @@ test("recognizes Pin-op by the manifest exposed inside its worker", () => {
   assert.equal(
     isProductManifest({
       name: "Unrelated extension",
-      version: "0.4.2",
+      version: "0.5.0",
       manifest_version: 3,
       background: { service_worker: "dist/background.js" },
     }),

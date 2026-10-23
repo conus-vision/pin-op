@@ -47,7 +47,7 @@ describe("VS Code extension manifest", () => {
       displayName: "Pin-op",
       description: productDescription,
       publisher: "conus-vision",
-      version: "0.4.2",
+      version: "0.5.0",
       license: "MIT",
       repository: "https://github.com/conus-vision/pin-op",
       bugs: "https://github.com/conus-vision/pin-op/issues",

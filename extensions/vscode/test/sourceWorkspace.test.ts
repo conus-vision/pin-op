@@ -3,6 +3,7 @@ import {
   canonicalRulesSourceUri,
   classifyActiveDocumentSource,
   exactWorkspaceUri,
+  RulesSourceSnapshotLimitError,
   VsCodeSourceWorkspace,
   type WorkspaceHost,
 } from "../src/sourcePlugins/sourceWorkspace.js";
@@ -201,6 +202,104 @@ describe("VsCodeSourceWorkspace", () => {
     await expect(workspace.readRulesSourceSnapshot(target, 5))
       .rejects.toThrow(/size|limit|large/i);
     expect(opens).toBe(1);
+  });
+
+  it("ranks a closed file by its bytes on disk without opening a document", async () => {
+    const target = "file:///workspace/dist/app.css";
+    const text = ".card { color: réd; }";
+    const counts = { stats: 0, fileReads: 0, opens: 0 };
+    const workspace = new VsCodeSourceWorkspace(rankingHost({
+      async readFile() {
+        counts.fileReads += 1;
+        // A byte-order mark is not part of the text, as in a document.
+        return new Uint8Array([
+          0xef, 0xbb, 0xbf,
+          ...new TextEncoder().encode(text),
+        ]);
+      },
+      async stat() {
+        counts.stats += 1;
+        return { size: new TextEncoder().encode(text).length + 3 };
+      },
+      getOpenTextDocument: () => undefined,
+      async openTextDocument() {
+        counts.opens += 1;
+        throw new Error("must not open a document to rank it");
+      },
+    }));
+
+    await expect(workspace.readRulesRankingText(
+      target,
+      64,
+      new AbortController().signal,
+    )).resolves.toBe(text);
+    expect(counts).toEqual({ stats: 1, fileReads: 1, opens: 0 });
+  });
+
+  it("ranks an open document by the text the user sees", async () => {
+    const target = "file:///workspace/dist/app.css";
+    const counts = { stats: 0, fileReads: 0, opens: 0 };
+    const workspace = new VsCodeSourceWorkspace(rankingHost({
+      async readFile() {
+        counts.fileReads += 1;
+        return new TextEncoder().encode(".card { color: blue; }");
+      },
+      async stat() {
+        counts.stats += 1;
+        return { size: 10_000 };
+      },
+      getOpenTextDocument: (uri) => ({
+        uri,
+        version: 9,
+        getText: () => ".card { color: red; }",
+      }),
+      async openTextDocument() {
+        counts.opens += 1;
+        throw new Error("must not reopen an open document");
+      },
+    }));
+
+    await expect(workspace.readRulesRankingText(target, 64))
+      .resolves.toBe(".card { color: red; }");
+    await expect(workspace.readRulesRankingText(target, 8))
+      .rejects.toBeInstanceOf(RulesSourceSnapshotLimitError);
+    expect(counts).toEqual({ stats: 0, fileReads: 0, opens: 0 });
+  });
+
+  it("turns away an oversized or outside file before reading it for ranking", async () => {
+    const counts = { fileReads: 0, opens: 0 };
+    let size = 65;
+    let bytes = new Uint8Array(4);
+    const workspace = new VsCodeSourceWorkspace(rankingHost({
+      async readFile() {
+        counts.fileReads += 1;
+        return bytes;
+      },
+      stat: async () => ({ size }),
+      async openTextDocument() {
+        counts.opens += 1;
+        throw new Error("must not open a document to rank it");
+      },
+    }));
+
+    await expect(workspace.readRulesRankingText(
+      "file:///workspace/dist/app.css",
+      64,
+    )).rejects.toBeInstanceOf(RulesSourceSnapshotLimitError);
+    await expect(workspace.readRulesRankingText(
+      "file:///outside/app.css",
+      64,
+    )).rejects.toThrow(/outside the workspace/);
+    expect(counts).toEqual({ fileReads: 0, opens: 0 });
+
+    // A file that grew after its size was read is still held to the limit.
+    size = 1;
+    bytes = new Uint8Array(65);
+    await expect(workspace.readRulesRankingText(
+      "file:///workspace/dist/app.css",
+      64,
+    )).rejects.toBeInstanceOf(RulesSourceSnapshotLimitError);
+    expect(counts).toEqual({ fileReads: 1, opens: 0 });
   });
 
   it("grants reusable exact authority only to one in-workspace URI", () => {
@@ -1008,3 +1107,18 @@ describe("VsCodeSourceWorkspace", () => {
     );
   });
 });
+
+function rankingHost(
+  overrides: Pick<WorkspaceHost, "readFile" | "stat"> &
+    Partial<Pick<WorkspaceHost, "getOpenTextDocument" | "openTextDocument">>,
+): WorkspaceHost {
+  const asUri = (value: string) => ({ toString: () => value });
+  return {
+    workspaceFolders: [{ uri: asUri("file:///workspace") }],
+    findFiles: async () => [],
+    joinPath: (base, ...segments) =>
+      asUri(`${base.toString()}/${segments.join("/")}`),
+    parseUri: asUri,
+    ...overrides,
+  };
+}
