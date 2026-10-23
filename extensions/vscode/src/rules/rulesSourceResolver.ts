@@ -14,6 +14,7 @@ import {
 import { completeCssRuleEvidence } from "../sourcePlugins/cssFacts.js";
 import {
   completeDeclarationFingerprint,
+  declarationFingerprint,
   declarationsBrowsersKeep,
   declarationsContainEvidence,
   equalReportedDeclarations,
@@ -34,6 +35,7 @@ import {
   StylesheetAstCache,
   StylesheetParseLimitError,
   type ParsedStylesheet,
+  type StylesheetDeclaration,
   type StylesheetSyntax,
   type StylesheetRule,
 } from "../sourcePlugins/stylesheetAst.js";
@@ -525,7 +527,17 @@ export class RulesSourceResolver {
       );
     if (
       !originalRule ||
-      !originalRuleCarriesEvidence(originalRule, evidence, mapCarriedThisSource)
+      !originalRuleCarriesEvidence(
+        originalRule,
+        evidence,
+        mapCarriedThisSource,
+        compiledDeclarationValues(
+          originalStylesheet,
+          originalRule,
+          verified,
+          mapped,
+        ),
+      )
     ) {
       return this.freshCssFallback(
         cssResult,
@@ -1103,12 +1115,14 @@ function isFileUri(uri: string): boolean {
   }
 }
 
+type MappedSelector = Extract<
+  Awaited<ReturnType<SourceMapLoader["resolveSelectorPrelude"]>>,
+  { readonly kind: "mapped" }
+>;
+
 function mappedOriginalRule(
   stylesheet: ParsedStylesheet,
-  mapped: Extract<
-    Awaited<ReturnType<SourceMapLoader["resolveSelectorPrelude"]>>,
-    { readonly kind: "mapped" }
-  >,
+  mapped: MappedSelector,
 ): StylesheetRule | undefined {
   const startOffset = sourceMapOffset(stylesheet, mapped.line, mapped.column);
   if (startOffset === undefined) return undefined;
@@ -1263,6 +1277,134 @@ function exactProtocolRangeMatchesRule(
 const RELATIVE_SELECTOR = /&|#\{/;
 
 /**
+ * CSS functions Sass copies into its output exactly as written. Sass computes
+ * every other call -- its own functions, `calc()` it can simplify, `min()`,
+ * `round()`, the colour functions, and whatever `@function` the project
+ * defines -- so a value calling one is no longer the text the file holds.
+ */
+const CSS_FUNCTIONS_SASS_COPIES = new Set([
+  "attr",
+  "blur",
+  "brightness",
+  "circle",
+  "conic-gradient",
+  "contrast",
+  "counter",
+  "counters",
+  "cubic-bezier",
+  "drop-shadow",
+  "ellipse",
+  "env",
+  "fit-content",
+  "format",
+  "hue-rotate",
+  "image-set",
+  "inset",
+  "linear-gradient",
+  "local",
+  "matrix",
+  "matrix3d",
+  "minmax",
+  "path",
+  "perspective",
+  "polygon",
+  "radial-gradient",
+  "repeat",
+  "repeating-conic-gradient",
+  "repeating-linear-gradient",
+  "repeating-radial-gradient",
+  "rotate",
+  "rotate3d",
+  "rotatex",
+  "rotatey",
+  "rotatez",
+  "scale",
+  "scale3d",
+  "scalex",
+  "scaley",
+  "scalez",
+  "sepia",
+  "skew",
+  "skewx",
+  "skewy",
+  "steps",
+  "translate",
+  "translate3d",
+  "translatex",
+  "translatey",
+  "translatez",
+  "url",
+  "var",
+]);
+const QUOTED_TEXT = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g;
+const FUNCTION_CALL = /([A-Za-z_][\w-]*(?:\.[A-Za-z_][\w-]*)?)\(/g;
+
+/**
+ * A value the preprocessor computes rather than copies: a variable, an
+ * interpolation, or a call Sass evaluates. The file says `t.$radius`, the
+ * generated CSS and the browser say `14px`, and the two can only be tied
+ * through the source map, never by comparing their text.
+ */
+function isPreprocessorValue(value: string): boolean {
+  if (value.includes("#{")) return true;
+  const unquoted = value.replace(QUOTED_TEXT, '""');
+  if (unquoted.includes("$")) return true;
+  for (const [, name] of unquoted.matchAll(FUNCTION_CALL)) {
+    if (!CSS_FUNCTIONS_SASS_COPIES.has(name!.toLowerCase())) return true;
+  }
+  return false;
+}
+
+/**
+ * What the preprocessor wrote for each computed value the rule declares, where
+ * the source map proves it.
+ *
+ * The compiler maps every declaration it writes to the declaration it
+ * compiled. A generated declaration whose start maps exactly onto the start of
+ * one the rule writes directly, under the same property and priority, is that
+ * declaration compiled -- and the generated rule has already been matched
+ * against what the browser reported. That proves the computed value, where
+ * comparing the file's `t.$radius` with the browser's `14px` never could. A
+ * plain value is not taken from here: comparing its text is what notices a
+ * file that changed after it was compiled.
+ */
+function compiledDeclarationValues(
+  original: ParsedStylesheet,
+  rule: StylesheetRule,
+  generated: StylesheetRule,
+  mapped: MappedSelector,
+): ReadonlyMap<StylesheetDeclaration, string> {
+  const compiled = new Map<StylesheetDeclaration, string>();
+  const contested = new Set<StylesheetDeclaration>();
+  for (const mapping of mapped.declarationMappings) {
+    const offset = sourceMapOffset(original, mapping.line, mapping.column);
+    const written = offset === undefined
+      ? undefined
+      : rule.writtenDeclarations.find((entry) => entry.startOffset === offset);
+    const output = generated.writtenDeclarations[mapping.declarationIndex];
+    if (
+      !written || !output || !isPreprocessorValue(written.value) ||
+      !sameProperty(written.property, output.property) ||
+      Boolean(written.important) !== Boolean(output.important)
+    ) {
+      continue;
+    }
+    if (compiled.has(written)) contested.add(written);
+    compiled.set(written, output.value);
+  }
+  for (const written of contested) compiled.delete(written);
+  return compiled;
+}
+
+function sameProperty(left: string, right: string): boolean {
+  const name = (property: string) => {
+    const trimmed = property.trim();
+    return trimmed.startsWith("--") ? trimmed : trimmed.toLowerCase();
+  };
+  return name(left) === name(right);
+}
+
+/**
  * Whether a preprocessor rule is the one the generated rule was compiled from.
  *
  * The generated rule has already been matched declaration for declaration, and
@@ -1270,12 +1412,15 @@ const RELATIVE_SELECTOR = /&|#\{/;
  * the rule the map points at is the same rule. Its declarations cannot be
  * required to match: a preprocessor rule may write none of them out -- a mixin
  * include compiles to a dozen -- so what it does declare directly must be
- * present in what the browser reported, and no more is asked of it.
+ * present in what the browser reported, and no more is asked of it. A value
+ * the preprocessor computed is read as what it compiled to, where the map
+ * proves that; everything else is read as written, property for property.
  */
 function originalRuleCarriesEvidence(
   rule: StylesheetRule,
   evidence: InspectRuleEvidence,
   mapCarriedThisSource: boolean,
+  compiled: ReadonlyMap<StylesheetDeclaration, string>,
 ): boolean {
   if (rule.hasUnsupportedGroupingContext) return false;
   const declarations = completeDeclarationFingerprint(
@@ -1303,10 +1448,13 @@ function originalRuleCarriesEvidence(
       return false;
     }
   }
-  const written = declarationsBrowsersKeep(
-    declarations,
-    rule.fingerprint.declarations,
-  );
+  const fingerprint = compiled.size === 0
+    ? rule.fingerprint.declarations
+    : declarationFingerprint(rule.writtenDeclarations.map((declaration) => {
+      const value = compiled.get(declaration);
+      return value === undefined ? declaration : { ...declaration, value };
+    }));
+  const written = declarationsBrowsersKeep(declarations, fingerprint);
   return written.length === 0 ||
     declarationsContainEvidence(declarations, written);
 }

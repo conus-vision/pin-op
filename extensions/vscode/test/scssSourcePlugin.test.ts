@@ -213,6 +213,58 @@ describe("ScssSourcePlugin", () => {
     ]);
   });
 
+  it("finds a generated rule by fingerprint when the browser leaves a default out", async () => {
+    const activeUri = "file:///workspace/src/_button.scss";
+    const generatedUri = "file:///workspace/dist/app.css";
+    const mapUri = `${generatedUri}.map`;
+    const original = [
+      ".btn {",
+      "  transition: background 0.15s ease, transform 0.15s ease;",
+      "}",
+    ].join("\n");
+    const generated = [
+      ".btn {",
+      "  transition: background 0.15s ease, transform 0.15s ease;",
+      "}",
+      "/*# sourceMappingURL=app.css.map */",
+    ].join("\n");
+    const generator = new SourceMapGenerator({ file: "app.css" });
+    generator.addMapping({
+      generated: { line: 1, column: 0 },
+      original: { line: 1, column: 0 },
+      source: "../src/_button.scss",
+    });
+    const files = {
+      [activeUri]: original,
+      [generatedUri]: generated,
+      [mapUri]: generator.toString(),
+    };
+    // The browser drops the `ease` it never has to write.
+    const reported = (value: string) => selection([cssTarget(
+      "selected",
+      ".btn",
+      "/dist/app.css",
+      { property: "transition", value, rulePath: "9.9" },
+    )]);
+
+    const result = await resolveScss(
+      activeUri,
+      original,
+      files,
+      reported("background 0.15s, transform 0.15s"),
+    );
+    expect(result.status).toBe("matched");
+    expect(snippets(original, result.matches)).toEqual([original]);
+
+    const other = await resolveScss(
+      activeUri,
+      original,
+      files,
+      reported("background 0.15s linear, transform 0.15s"),
+    );
+    expect(other.status).toBe("no-rule-match");
+  });
+
   it("rejects a mapped SCSS column that the document would clamp", async () => {
     const activeUri = "file:///workspace/src/card.scss";
     const generatedUri = "file:///workspace/dist/app.css";

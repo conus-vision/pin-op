@@ -43,6 +43,7 @@ export type SelectorSourceMapResolution =
   | Extract<SourceMapResolution, { readonly kind: "mapped" }> & {
       readonly sourceContent?: string;
       readonly selectorMappings: readonly SelectorOriginalMapping[];
+      readonly declarationMappings: readonly DeclarationOriginalMapping[];
       readonly mapKind: "inline" | "external";
       readonly mapText: string;
       readonly mapContentHash: string;
@@ -54,6 +55,19 @@ export interface SelectorOriginalMapping {
   readonly line: number;
   readonly column: number;
   readonly sourceContent?: string;
+}
+
+/**
+ * Where one of the generated rule's own declarations starts in the original
+ * file its selector maps into. A compiler maps each declaration it writes to
+ * the declaration it compiled, so this ties `border-radius: 14px` to the
+ * `border-radius: t.$radius` it came from.
+ */
+export interface DeclarationOriginalMapping {
+  /** Index into the generated rule's `writtenDeclarations`. */
+  readonly declarationIndex: number;
+  readonly line: number;
+  readonly column: number;
 }
 
 interface CachedSourceMap {
@@ -350,6 +364,27 @@ export class SourceMapLoader {
       const sourceContent = canonicalContents.get(
         canonicalSourceUrl(sourceUrl),
       );
+      const declarationMappings = generatedRule.writtenDeclarations.flatMap(
+        (declaration, declarationIndex): DeclarationOriginalMapping[] => {
+          const at = mappingsAt(
+            mappingIndex,
+            declaration.start.line + 1,
+            declaration.start.character,
+          );
+          const only = at.length === 1 ? at[0]! : undefined;
+          if (
+            !only ||
+            canonicalSourceUrl(resolveMappedSourceUrl(
+              only.source,
+              generatedSourceUrl,
+              reference,
+            )) !== canonicalSourceUrl(sourceUrl)
+          ) {
+            return [];
+          }
+          return [{ declarationIndex, line: only.line, column: only.column }];
+        },
+      );
       return {
         kind: "mapped",
         mapUri: loaded.mapUri,
@@ -358,6 +393,9 @@ export class SourceMapLoader {
         column: start.column,
         ...(sourceContent === undefined ? {} : { sourceContent }),
         selectorMappings: Object.freeze(selectorMappings.map((mapping) =>
+          Object.freeze(mapping)
+        )),
+        declarationMappings: Object.freeze(declarationMappings.map((mapping) =>
           Object.freeze(mapping)
         )),
         mapKind: loaded.mapKind!,
@@ -617,6 +655,38 @@ function mappingsWithinSelectorPrelude(
       generatedRule.selectorPreludeRange.end,
     ) < 0;
   });
+}
+
+/** Every mapping at exactly one generated position; the index is sorted. */
+function mappingsAt(
+  mappings: readonly GeneratedMapping[],
+  generatedLine: number,
+  generatedColumn: number,
+): readonly GeneratedMapping[] {
+  let low = 0;
+  let high = mappings.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    const mapping = mappings[middle]!;
+    if (
+      mapping.generatedLine < generatedLine ||
+      (mapping.generatedLine === generatedLine &&
+        mapping.generatedColumn < generatedColumn)
+    ) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  let end = low;
+  while (
+    end < mappings.length &&
+    mappings[end]!.generatedLine === generatedLine &&
+    mappings[end]!.generatedColumn === generatedColumn
+  ) {
+    end += 1;
+  }
+  return mappings.slice(low, end);
 }
 
 function comparePosition(

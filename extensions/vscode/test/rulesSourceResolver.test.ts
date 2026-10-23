@@ -886,6 +886,57 @@ describe("RulesSourceResolver", () => {
     });
   });
 
+  it("verifies a generated rule whose transition the browser reports without its defaults", async () => {
+    const cssUri = "file:///workspace/dist/app.css";
+    const scssUri = "file:///workspace/src/_button.scss";
+    const block = [
+      ".btn {",
+      "  display: inline-flex;",
+      "  transition: background 0.15s ease, transform 0.15s ease;",
+      "}",
+    ].join("\n");
+    const generator = new SourceMapGenerator({ file: "app.css" });
+    generator.addMapping({
+      generated: { line: 1, column: 0 },
+      original: { line: 1, column: 0 },
+      source: "../src/_button.scss",
+    });
+    const files = {
+      [cssUri]: `${block}\n/*# sourceMappingURL=app.css.map */`,
+      [`${cssUri}.map`]: generator.toString(),
+      [scssUri]: block,
+    };
+    // What Chrome and Firefox report for that rule: the `ease` is gone.
+    const reported = (transition: string) => evidence({
+      selector: ".btn",
+      startLine: 1,
+      startColumn: 1,
+      rulePath: "0.0",
+      declarations: [
+        { property: "display", value: "inline-flex" },
+        { property: "transition", value: transition },
+      ],
+    });
+
+    await expect(resolveOne(
+      memoryWorkspace(files),
+      reported("background 0.15s, transform 0.15s"),
+    )).resolves.toMatchObject({
+      kind: "resolved",
+      document: { uri: scssUri, languageId: "scss" },
+      range: { start: { line: 0, character: 0 } },
+      confidence: "sourcemap",
+    });
+    // A different timing is a different rule, and nothing is guessed.
+    await expect(resolveOne(
+      memoryWorkspace(files),
+      reported("background 0.15s linear, transform 0.15s"),
+    )).resolves.toMatchObject({
+      kind: "unresolved",
+      reason: "generated-css-not-exact",
+    });
+  });
+
   it("fences generated CSS after unique-fingerprint relocation", async () => {
     const cssUri = "file:///workspace/dist/app.css";
     const initial = ".card { color: red; }";
@@ -1552,6 +1603,211 @@ describe("RulesSourceResolver", () => {
       kind: "resolved",
       document: { uri: scssUri, languageId: "scss" },
       confidence: "sourcemap",
+    });
+  });
+
+  it("opens the SCSS rule whose declaration value is a Sass variable", async () => {
+    const cssUri = "file:///workspace/css/main.css";
+    const scssUri = "file:///workspace/scss/main.scss";
+    const scss = [
+      "$r: 14px;",
+      ".a { display: flex; border-radius: $r; }",
+    ].join("\n");
+    const css = [
+      ".a {",
+      "  display: flex;",
+      "  border-radius: 14px;",
+      "}",
+      "/*# sourceMappingURL=main.css.map */",
+    ].join("\n");
+    // The mappings dart-sass writes: the rule, each declaration's start, and
+    // the variable's value back to where it is defined.
+    const map = sassMap("main.css", "../scss/main.scss", [
+      [1, 0, 2, 0],
+      [2, 2, 2, 5],
+      [3, 2, 2, 20],
+      [3, 17, 1, 4],
+    ]);
+
+    const result = await resolveOne(memoryWorkspace({
+      [cssUri]: css,
+      [`${cssUri}.map`]: map,
+      [scssUri]: scss,
+    }), evidence({
+      selector: ".a",
+      sourceUrl: "http://localhost:4173/css/main.css",
+      startLine: 1,
+      startColumn: 1,
+      rulePath: "0.0",
+      declarations: [
+        { property: "display", value: "flex" },
+        { property: "border-radius", value: "14px" },
+      ],
+    }));
+
+    expect(result).toMatchObject({
+      kind: "resolved",
+      document: { uri: scssUri, languageId: "scss" },
+      range: { start: { line: 1, character: 0 } },
+      confidence: "sourcemap",
+    });
+  });
+
+  it("opens a partial whose values come from module variables and functions", async () => {
+    const { files, cssUri, scssUri } = cardFixture();
+
+    const result = await resolveOne(memoryWorkspace(files), cardEvidence());
+
+    expect(result).toMatchObject({
+      kind: "resolved",
+      document: { uri: scssUri, languageId: "scss" },
+      range: { start: { line: 2, character: 0 } },
+      confidence: "sourcemap",
+    });
+    expect(result.kind === "resolved" && result.document.uri).not.toBe(cssUri);
+  });
+
+  it("still opens the plain-CSS control rule beside the Sass-valued ones", async () => {
+    const cssUri = "file:///workspace/css/main.css";
+    const scssUri = "file:///workspace/scss/main.scss";
+    const scss = ".c { border-radius: var(--r); transition: transform 0.2s; }";
+    const css = [
+      ".c {",
+      "  border-radius: var(--r);",
+      "  transition: transform 0.2s;",
+      "}",
+      "/*# sourceMappingURL=main.css.map */",
+    ].join("\n");
+    // Only the rule is mapped: a plain value needs no declaration mapping.
+    const map = sassMap("main.css", "../scss/main.scss", [[1, 0, 1, 0]]);
+
+    await expect(resolveOne(memoryWorkspace({
+      [cssUri]: css,
+      [`${cssUri}.map`]: map,
+      [scssUri]: scss,
+    }), evidence({
+      selector: ".c",
+      sourceUrl: "http://localhost:4173/css/main.css",
+      startLine: 1,
+      startColumn: 1,
+      rulePath: "0.0",
+      declarations: [
+        { property: "border-radius", value: "var(--r)" },
+        { property: "transition", value: "transform 0.2s" },
+      ],
+    }))).resolves.toMatchObject({
+      kind: "resolved",
+      document: { uri: scssUri, languageId: "scss" },
+      confidence: "sourcemap",
+    });
+  });
+
+  it.each([
+    [
+      "the map ties no declaration to the rule",
+      (mappings: SassMapping[]) => mappings.slice(0, 1),
+      undefined,
+    ],
+    [
+      "a declaration maps into another rule's block",
+      (mappings: SassMapping[]) => mappings.map((mapping): SassMapping =>
+        mapping[0] === 3 && mapping[1] === 2 ? [3, 2, 1, 9] : mapping
+      ),
+      [".other { border-radius: t.$radius; }", ...CARD_SCSS.slice(1)],
+    ],
+    [
+      "a declaration maps onto a different property",
+      (mappings: SassMapping[]) => mappings.map((mapping): SassMapping =>
+        mapping[0] === 3 && mapping[1] === 2 ? [3, 2, 6, 2] : mapping
+      ),
+      undefined,
+    ],
+    [
+      "a declaration start maps into another file",
+      (mappings: SassMapping[]) => mappings.map((mapping): SassMapping =>
+        mapping[0] === 3 && mapping[1] === 2
+          ? [3, 2, 2, 0, "../scss/_tokens.scss"]
+          : mapping
+      ),
+      undefined,
+    ],
+  ])("keeps CSS authority when %s", async (_case, remap, scssLines) => {
+    const { files, cssUri } = cardFixture({ remap, scssLines });
+
+    await expect(resolveOne(memoryWorkspace(files), cardEvidence()))
+      .resolves.toMatchObject({
+        kind: "resolved",
+        document: { uri: cssUri, languageId: "css" },
+        confidence: "exact",
+      });
+  });
+
+  it("keeps CSS authority when the SCSS rule writes a property the browser never reported", async () => {
+    const cssUri = "file:///workspace/css/main.css";
+    const scssUri = "file:///workspace/scss/main.scss";
+    // `$g` is null, so Sass writes no `gap` at all.
+    const scss = [
+      "$r: 14px; $g: null;",
+      ".a { border-radius: $r; gap: $g; }",
+    ].join("\n");
+    const css = [
+      ".a {",
+      "  border-radius: 14px;",
+      "}",
+      "/*# sourceMappingURL=main.css.map */",
+    ].join("\n");
+    const map = sassMap("main.css", "../scss/main.scss", [
+      [1, 0, 2, 0],
+      [2, 2, 2, 5],
+    ]);
+
+    await expect(resolveOne(memoryWorkspace({
+      [cssUri]: css,
+      [`${cssUri}.map`]: map,
+      [scssUri]: scss,
+    }), evidence({
+      selector: ".a",
+      sourceUrl: "http://localhost:4173/css/main.css",
+      startLine: 1,
+      startColumn: 1,
+      rulePath: "0.0",
+      declarations: [{ property: "border-radius", value: "14px" }],
+    }))).resolves.toMatchObject({
+      kind: "resolved",
+      document: { uri: cssUri, languageId: "css" },
+    });
+  });
+
+  it("still compares a plain value as written even where the map ties it", async () => {
+    const cssUri = "file:///workspace/css/main.css";
+    const scssUri = "file:///workspace/scss/main.scss";
+    // The SCSS was edited after it was compiled: the map still lines up, but a
+    // plain value says what the file now holds, and that is not what runs.
+    const scss = ".a { color: blue; }";
+    const css = [
+      ".a {",
+      "  color: red;",
+      "}",
+      "/*# sourceMappingURL=main.css.map */",
+    ].join("\n");
+    const map = sassMap("main.css", "../scss/main.scss", [
+      [1, 0, 1, 0],
+      [2, 2, 1, 5],
+    ]);
+
+    await expect(resolveOne(memoryWorkspace({
+      [cssUri]: css,
+      [`${cssUri}.map`]: map,
+      [scssUri]: scss,
+    }), evidence({
+      selector: ".a",
+      sourceUrl: "http://localhost:4173/css/main.css",
+      startLine: 1,
+      startColumn: 1,
+      rulePath: "0.0",
+    }))).resolves.toMatchObject({
+      kind: "resolved",
+      document: { uri: cssUri, languageId: "css" },
     });
   });
 
@@ -2610,6 +2866,102 @@ async function resolveBatch(
     },
     signal: options.signal ?? new AbortController().signal,
     ...(options.isCurrent === undefined ? {} : { isCurrent: options.isCurrent }),
+  });
+}
+
+type SassMapping = readonly [
+  generatedLine: number,
+  generatedColumn: number,
+  originalLine: number,
+  originalColumn: number,
+  source?: string,
+];
+
+function sassMap(
+  file: string,
+  source: string,
+  mappings: readonly SassMapping[],
+): string {
+  const generator = new SourceMapGenerator({ file });
+  for (const [line, column, originalLine, originalColumn, mapped] of mappings) {
+    generator.addMapping({
+      generated: { line, column },
+      original: { line: originalLine, column: originalColumn },
+      source: mapped ?? source,
+    });
+  }
+  return generator.toString();
+}
+
+const CARD_SCSS = [
+  '@use "sass:math";',
+  '@use "tokens" as t;',
+  ".card {",
+  "  display: flex;",
+  "  border-radius: t.$radius;",
+  "  padding: math.div(t.$gap, 2) t.$gap;",
+  "  color: rgba(t.$accent, .5);",
+  "  transition: transform 0.2s ease, box-shadow 0.2s ease;",
+  "}",
+];
+
+/** What dart-sass 1.83 writes for CARD_SCSS, mapping for mapping. */
+const CARD_MAPPINGS: readonly SassMapping[] = [
+  [1, 0, 3, 0],
+  [2, 2, 4, 2],
+  [3, 2, 5, 2],
+  [3, 17, 2, 9, "../scss/_tokens.scss"],
+  [4, 2, 6, 2],
+  [5, 2, 7, 2],
+  [6, 2, 8, 2],
+];
+
+function cardFixture(options: {
+  readonly remap?: (mappings: SassMapping[]) => SassMapping[];
+  readonly scssLines?: readonly string[];
+} = {}) {
+  const cssUri = "file:///workspace/css/main.css";
+  const scssUri = "file:///workspace/scss/_card.scss";
+  const css = [
+    ".card {",
+    "  display: flex;",
+    "  border-radius: 14px;",
+    "  padding: 12px 24px;",
+    "  color: rgba(194, 65, 12, 0.5);",
+    "  transition: transform 0.2s ease, box-shadow 0.2s ease;",
+    "}",
+    "/*# sourceMappingURL=main.css.map */",
+  ].join("\n");
+  const mappings = options.remap?.([...CARD_MAPPINGS]) ?? CARD_MAPPINGS;
+  const files: Record<string, string> = {
+    [cssUri]: css,
+    [`${cssUri}.map`]: sassMap("main.css", "../scss/_card.scss", mappings),
+    [scssUri]: (options.scssLines ?? CARD_SCSS).join("\n"),
+    "file:///workspace/scss/_tokens.scss": [
+      '@use "sass:math";',
+      "$radius: 14px;",
+      "$accent: #c2410c;",
+      "$gap: 24px;",
+    ].join("\n"),
+  };
+  return { files, cssUri, scssUri };
+}
+
+/** What Chrome and Firefox report for the compiled `.card`. */
+function cardEvidence(): InspectRuleEvidence {
+  return evidence({
+    selector: ".card",
+    sourceUrl: "http://localhost:4173/css/main.css",
+    startLine: 1,
+    startColumn: 1,
+    rulePath: "0.0",
+    declarations: [
+      { property: "display", value: "flex" },
+      { property: "border-radius", value: "14px" },
+      { property: "padding", value: "12px 24px" },
+      { property: "color", value: "rgba(194, 65, 12, 0.5)" },
+      { property: "transition", value: "transform 0.2s, box-shadow 0.2s" },
+    ],
   });
 }
 

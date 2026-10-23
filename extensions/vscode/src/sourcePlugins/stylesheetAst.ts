@@ -55,6 +55,14 @@ export interface StylesheetRule {
   readonly hasAuthoringRewrittenSelector: boolean;
   readonly hasCompleteDeclarationFingerprint: boolean;
   readonly fingerprint: RuleFingerprint;
+  /** What the rule declares directly, after its own cascade, as written. */
+  readonly writtenDeclarations: readonly StylesheetDeclaration[];
+}
+
+/** A declaration as the stylesheet writes it, and where it starts. */
+export interface StylesheetDeclaration extends CssDeclarationEvidence {
+  readonly start: SourcePosition;
+  readonly startOffset: number;
 }
 
 export interface StylesheetRuleContext {
@@ -362,7 +370,9 @@ function ruleFromNode(
     end,
   );
   if (selectorEnd === undefined || selectorEnd <= start) return undefined;
-  const declarations = declarationsAfterInRuleCascade(directDeclarations(node));
+  const declarations = declarationsAfterInRuleCascade(
+    directDeclarations(node, document),
+  );
   const normalizedDeclarations = declarationFingerprint(declarations);
   return {
     selector: node.selector,
@@ -391,6 +401,7 @@ function ruleFromNode(
       declarations: normalizedDeclarations,
       conditions: containingMedia(node).map(normalizeCondition),
     },
+    writtenDeclarations: declarations,
   };
 }
 
@@ -674,14 +685,25 @@ function hashText(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
-function directDeclarations(node: Rule): CssDeclarationEvidence[] {
+function directDeclarations(
+  node: Rule,
+  document: SourceDocument,
+): StylesheetDeclaration[] {
   return (node.nodes ?? [])
     .filter((child): child is Declaration => child.type === "decl")
-    .map((declaration) => ({
-      property: declaration.prop,
-      value: declaration.value,
-      important: declaration.important,
-    }));
+    .map((declaration) => {
+      // A declaration with no known start can never be tied to a mapping.
+      const startOffset = declaration.source?.start?.offset ?? -1;
+      return {
+        property: declaration.prop,
+        value: declaration.value,
+        important: declaration.important,
+        start: startOffset < 0
+          ? { line: -1, character: -1 }
+          : document.positionAt(startOffset),
+        startOffset,
+      };
+    });
 }
 
 type ContainerContext = "rules" | "keyframes";

@@ -45,6 +45,36 @@ All notable changes to Pin-op will be documented in this file.
   attribute, a bare `<body>` for instance; the miss reads as a miss.
 - The footer says "N matches highlighted" for PHP and script documents instead
   of counting template and script matches as rules.
+- Rules opens the SCSS rule whose declaration value Sass computes. A rule
+  writing `border-radius: t.$radius` compiles to `14px`, and Pin-op compared the
+  file's `t.$radius` with the browser's `14px` as text, so the block was never
+  confirmed and the origin stayed on the generated CSS -- for almost every rule
+  in a real project, since variables, `math.div`, `rgba($c, .5)`, interpolation,
+  and project functions are everywhere. dart-sass maps every declaration it
+  writes to the declaration it compiled, so such a value is now proven through
+  the source map: the generated declaration's start must map exactly onto a
+  declaration the same block writes directly, under the same property and
+  priority. A plain value is still compared as written, which keeps a file
+  edited after it was compiled on its generated CSS.
+- Rules verifies a rule whose shorthands the browser reports in its own words.
+  `transition: transform 0.2s ease` comes back from Chrome and Firefox as
+  `transform 0.2s`, so the rule matched nothing in the generated file and its
+  origin was the bare stylesheet name with no line. Both sides are now read as
+  the longhands a shorthand sets, every omitted part at its initial value, for
+  `transition`, `animation`, `flex`, `flex-flow`, `outline`, `border` and its
+  sides, `background`, `font`, `list-style`, `columns`, and `text-decoration`,
+  along with positions, `url()` quoting, gradient defaults, legacy aliases both
+  engines share such as `grid-gap` and `-webkit-transform`, and Firefox's
+  `-moz-box-*` names for a line clamp. Checked against what Chrome 155 and
+  Firefox 158 report for 574 rules as authors and dart-sass write them: the
+  rules that matched in both engines went from 200 to 528, and none that
+  matched before stopped. What still differs -- Chrome's lossy report of a zero
+  duration followed by a delay, `border-image`, `mask`, and aliases only one
+  engine knows -- is left on the generated CSS rather than guessed.
+- A `border-color` or other side shorthand whose colours are functions, such as
+  `currentcolor currentcolor rgb(238, 238, 238)`, is read as its four sides. The
+  commas inside `rgb()` were taken for a list, so `border: none; border-bottom:
+  1px solid #eee`, which both engines report in that form, never matched.
 
 ### Changed
 
