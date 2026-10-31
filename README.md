@@ -15,12 +15,19 @@ Chrome and Firefox use one shared Chromium-derived read-only Inspector UI for
 the DOM Tree and Rules.
 
 [Website](https://pin-op.conus.vision) ·
+[Demo video](https://www.youtube.com/watch?v=P0YzsLT5IrQ) ·
 [Documentation](docs/mvp-usage.md) ·
 [Issues](https://github.com/conus-vision/pin-op/issues)
 
 > Alpha: product and installation details may change before 1.0.
 
 ## See It Work
+
+[![Pin-op demo video: from a page element to its source in VS Code](https://i.ytimg.com/vi/P0YzsLT5IrQ/maxresdefault.jpg)](https://www.youtube.com/watch?v=P0YzsLT5IrQ)
+
+[Watch the demo on YouTube](https://www.youtube.com/watch?v=P0YzsLT5IrQ)
+(4 minutes): install both halves, link them, pick an element, follow its rule to
+the SCSS block, then make the same button edit in DevTools and in your file.
 
 ```mermaid
 flowchart LR
