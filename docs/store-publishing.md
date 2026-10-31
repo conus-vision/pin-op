@@ -47,8 +47,8 @@ video differently:
 | --- | --- | --- |
 | Visual Studio Marketplace | A `<video>` tag in the README with a public MP4 URL; it changes only with a new package | The short VS Code cut, hosted on the website |
 | Chrome Web Store | A YouTube link in the store listing's video field; no file upload | The short Chrome cut on YouTube |
-| Firefox Add-ons | No video; a link in the description | A link to the full demo |
-| GitHub README | A player only for a file uploaded to GitHub, 10 MB on a free plan | The short cut |
+| Firefox Add-ons | No video, and screenshots must be static PNG or JPG; a link in the description | A numbered series of screenshots and a link to the full demo |
+| GitHub README | An image or GIF under 5 MB; a player only for a file uploaded to GitHub, 10 MB on a free plan | The looping GIF in `docs/media/`, linked to the full demo |
 
 ## Visual Studio Marketplace
 

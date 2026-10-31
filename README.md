@@ -23,7 +23,7 @@ the DOM Tree and Rules.
 
 ## See It Work
 
-[![Pin-op demo video: from a page element to its source in VS Code](https://i.ytimg.com/vi/P0YzsLT5IrQ/maxresdefault.jpg)](https://www.youtube.com/watch?v=P0YzsLT5IrQ)
+[![Pick a button in the browser, its SCSS block lights up in VS Code, and a saved color change updates the page without a reload](docs/media/pin-op-demo.gif)](https://www.youtube.com/watch?v=P0YzsLT5IrQ)
 
 [Watch the demo on YouTube](https://www.youtube.com/watch?v=P0YzsLT5IrQ)
 (4 minutes): install both halves, link them, pick an element, follow its rule to
