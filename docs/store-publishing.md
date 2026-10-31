@@ -34,6 +34,21 @@ submission therefore needs the next patch version everywhere.
 4. If a listing describes a feature this version changes, update its text in
    [store listings](store-listings.md) first, so each store receives the same
    wording.
+5. Open the video URL in `extensions/vscode/README.md` and check that it plays.
+   The URL ships inside the package, so a missing file means an empty player on
+   the Marketplace page until the next version.
+
+## Demo videos
+
+The full demo is <https://www.youtube.com/watch?v=P0YzsLT5IrQ>. Each listing shows
+video differently:
+
+| Place | What it can show | What goes there |
+| --- | --- | --- |
+| Visual Studio Marketplace | A `<video>` tag in the README with a public MP4 URL; it changes only with a new package | The short VS Code cut, hosted on the website |
+| Chrome Web Store | A YouTube link in the store listing's video field; no file upload | The short Chrome cut on YouTube |
+| Firefox Add-ons | No video; a link in the description | A link to the full demo |
+| GitHub README | A player only for a file uploaded to GitHub, 10 MB on a free plan | The short cut |
 
 ## Visual Studio Marketplace
 

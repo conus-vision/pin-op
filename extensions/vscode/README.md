@@ -8,6 +8,10 @@ time in the editor: pick the element in the browser and the blocks that style
 it light up here. Click a declaration in the browser's Rules pane and this
 editor opens it with the cursor on the value.
 
+<video src="https://pin-op.conus.vision/assets/video/pin-op-demo-short-vscode.mp4" poster="https://pin-op.conus.vision/assets/video/pin-op-demo-short-vscode.jpg" width="640" controls></video>
+
+[Watch the full 4-minute demo on YouTube](https://www.youtube.com/watch?v=P0YzsLT5IrQ).
+
 ## Install
 
 Pin-op has two halves and needs both. This extension is the IDE half. The

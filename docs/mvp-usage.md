@@ -12,6 +12,9 @@ or [Firefox Add-ons](https://addons.mozilla.org/addon/pin-op/)
 listing. VS Code is the only IDE a browser window can link to, and support for
 other IDEs is in development.
 
+The [4-minute demo video](https://www.youtube.com/watch?v=P0YzsLT5IrQ) shows the
+whole workflow.
+
 Ordinary and store Firefox/Chrome packages open one shared Chromium-derived,
 read-only Inspector UI by default. It adapts pinned BSD-licensed Chromium
 DevTools DOM Tree and Rules presentation to Pin-op's browser-local models; it is

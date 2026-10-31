@@ -9,18 +9,25 @@ explicit seven-digit code. Select an element on the page or in the lazy DOM
 tree, then inspect its DOM and Rules while the related CSS or source-mapped SCSS
 ranges are highlighted in the IDE.
 
+Watch the 4-minute demo: https://www.youtube.com/watch?v=P0YzsLT5IrQ
+
 Pin-op distinguishes rules for the selected element from rules for its
 immediate parent. Auto Refresh updates eligible styles without reloading the
 page and reloads the current tab with scroll restoration after changed script,
 Vue, PHP, or HTML saves.
 
+Clicking a declaration in Rules opens it in VS Code with the cursor on its
+value. Clicking an `@media` size resizes the browser window to that size.
+Built-in PHP and JavaScript providers list where the active template or script
+names the selected element.
+
 Chrome and Firefox use one shared Chromium-derived read-only Inspector UI. It
 is a BSD-licensed derivation with attribution in the package notices, and the
 pinned Chromium source is available in the Firefox release source archive.
 
-Only after an explicit Rules origin click may Pin-op open the exact verified CSS
-or original source-mapped SCSS block in VS Code using an IDE-issued opaque
-authority. Passive inspection never switches files, and no workspace path,
+Only after an explicit Rules origin click or declaration click may Pin-op open
+the exact verified CSS or original source-mapped SCSS block in VS Code using an
+IDE-issued opaque authority. Passive inspection never switches files, and no workspace path,
 full range, document version, or command crosses the bridge.
 
 The author-style pseudo preview supports `:hover` and `:focus`; it is not native
@@ -58,18 +65,25 @@ through an explicit seven-digit code. Select an element on the page or in the
 lazy DOM tree, then see the related CSS or source-mapped SCSS ranges highlighted
 in the active IDE file and inspect its DOM and Rules.
 
+Watch the 4-minute demo: https://www.youtube.com/watch?v=P0YzsLT5IrQ
+
 Pin-op distinguishes rules for the selected element from rules for its
 immediate parent. Auto Refresh updates eligible styles without reloading the
 page and reloads the current tab with scroll restoration after changed script,
 Vue, PHP, or HTML saves.
 
+Clicking a declaration in Rules opens it in VS Code with the cursor on its
+value. Clicking an `@media` size resizes the browser window to that size.
+Built-in PHP and JavaScript providers list where the active template or script
+names the selected element.
+
 Chrome and Firefox use one shared Chromium-derived read-only Inspector UI. It
 is a BSD-licensed derivation with attribution in the package notices, and the
 pinned Chromium source is available in the Firefox release source archive.
 
-Only after an explicit Rules origin click may Pin-op open the exact verified CSS
-or original source-mapped SCSS block in VS Code using an IDE-issued opaque
-authority. Passive inspection never switches files, and no workspace path,
+Only after an explicit Rules origin click or declaration click may Pin-op open
+the exact verified CSS or original source-mapped SCSS block in VS Code using an
+IDE-issued opaque authority. Passive inspection never switches files, and no workspace path,
 full range, document version, or command crosses the bridge.
 
 The author-style pseudo preview supports `:hover` and `:focus`; it is not native
