@@ -3,8 +3,9 @@
 Pin-op reaches users through three store listings: the Visual Studio
 Marketplace, the Chrome Web Store and Firefox Add-ons. A GitHub release is an
 archive of the same packages and their checksums, not a distribution channel.
-Version `0.4.2` is published on all three, and `0.5.0` is the release being
-prepared.
+Version `0.5.0` is published on the Visual Studio Marketplace, on Firefox
+Add-ons and as a GitHub release with its Mozilla-signed `.xpi`; the Chrome Web
+Store still serves `0.4.2` until its review of `0.5.0` completes.
 
 ## Release An Update
 

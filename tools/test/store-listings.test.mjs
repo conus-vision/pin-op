@@ -221,7 +221,10 @@ test("root README leads with the installed alpha workflow without timing claims"
     rootReadme,
     /> Alpha: product and installation details may change before 1\.0\./,
   );
-  assert.match(rootReadme, /The `0\.5\.0` GitHub Release is being prepared\./);
+  assert.match(
+    rootReadme,
+    /The \[`0\.5\.0` GitHub Release\]\(https:\/\/github\.com\/conus-vision\/pin-op\/releases\/tag\/v0\.5\.0\)\s+contains:/,
+  );
 });
 
 test("root README preserves release artifact trust facts", () => {
@@ -243,7 +246,7 @@ test("root README preserves release artifact trust facts", () => {
   );
   assert.ok(
     normalizedStatus.includes(
-      "No public `0.5.0` GitHub Release is claimed yet.",
+      "`pin-op-firefox-0.5.0.xpi` is the file Mozilla signed for the Firefox Add-ons listing, verified by `pin-op-firefox-0.5.0.xpi.sha256`",
     ),
   );
 });

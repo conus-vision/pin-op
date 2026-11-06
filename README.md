@@ -171,25 +171,23 @@ The store listings are the normal way to install Pin-op. The release artifacts
 below exist for checksum verification and offline installation, and they are
 distributed separately from the stores.
 
-The `0.5.0` GitHub Release is being prepared. It will contain:
+The [`0.5.0` GitHub Release](https://github.com/conus-vision/pin-op/releases/tag/v0.5.0)
+contains:
 
 - `pin-op-vscode-0.5.0.vsix`;
 - `pin-op-chrome-0.5.0.zip`;
 - `pin-op-firefox-0.5.0.zip`;
 - `pin-op-firefox-source-0.5.0.zip`;
-- `SHA256SUMS`.
+- `SHA256SUMS`;
+- `pin-op-firefox-0.5.0.xpi` and `pin-op-firefox-0.5.0.xpi.sha256`.
 
 `SHA256SUMS` verifies the four packaged artifacts. The Firefox ZIP is unsigned
 Mozilla-review/build input and cannot be installed persistently in Firefox
-Stable. Firefox Add-ons serves the signed build instead. No public `0.5.0` GitHub
-Release is claimed yet. The
-[installed artifact guide](docs/installed-verification.md) covers candidate
+Stable. `pin-op-firefox-0.5.0.xpi` is the file Mozilla signed for the Firefox
+Add-ons listing, verified by `pin-op-firefox-0.5.0.xpi.sha256`; before it was
+attached, the release checked it against `pin-op-firefox-0.5.0.zip` file by
+file. The [installed artifact guide](docs/installed-verification.md) covers
 installation and the current evidence status.
-
-Once Firefox Add-ons has signed `0.5.0`, the release also carries
-`pin-op-firefox-0.5.0.xpi`, the file Mozilla signed for the listing, with
-`pin-op-firefox-0.5.0.xpi.sha256`. Before it is attached, the release checks it
-against `pin-op-firefox-0.5.0.zip` file by file.
 
 ### Install from a GitHub release
 
