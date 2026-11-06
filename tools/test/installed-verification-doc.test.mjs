@@ -1102,7 +1102,7 @@ test("README presents the canonical Pin-op workflow and release status", () => {
   );
   assert.ok(
     normalizedReadme.includes(
-      "No public `0.5.0` GitHub Release is claimed yet.",
+      "before it was attached, the release checked it against `pin-op-firefox-0.5.0.zip` file by file.",
     ),
   );
   assert.ok(

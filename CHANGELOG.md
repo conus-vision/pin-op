@@ -4,6 +4,17 @@ All notable changes to Pin-op will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- `release:verify-xpi` accepts the file Firefox Add-ons actually serves. The
+  listed `0.5.0` file carries `manifest.json` written out again -- the same
+  JSON, every array on its own lines -- and its JAR manifest also lists the
+  COSE signature files, and the check refused both. The manifest is now held to
+  the same JSON value and every other file is still compared byte for byte; the
+  COSE files are held to their digests like every other listed file.
+
+## [0.5.0] - 2026-10-24
+
 ### Added
 
 - Clicking a declaration in Rules opens its rule in VS Code with the cursor at
