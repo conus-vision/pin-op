@@ -43,14 +43,21 @@ function jarManifest(files) {
   return `Manifest-Version: 1.0\n\n${sections.join("\n")}`;
 }
 
+/**
+ * Shaped like the file Firefox Add-ons serves: its JAR manifest lists the COSE
+ * manifest and signature as well as every file of the add-on.
+ */
 function signed(files, extra = {}) {
-  return archive({
-    ...files,
-    "META-INF/manifest.mf": jarManifest(files),
-    "META-INF/mozilla.sf": "Signature-Version: 1.0\n",
-    "META-INF/mozilla.rsa": `DER certificate for CN=${FIREFOX_ADDON_ID}`,
+  const cose = {
     "META-INF/cose.manifest": "Manifest-Version: 1.0\n",
     "META-INF/cose.sig": "cose",
+  };
+  return archive({
+    ...files,
+    ...cose,
+    "META-INF/manifest.mf": jarManifest({ ...files, ...cose }),
+    "META-INF/mozilla.sf": "Signature-Version: 1.0\n",
+    "META-INF/mozilla.rsa": `DER certificate for CN=${FIREFOX_ADDON_ID}`,
     ...extra,
   });
 }
@@ -101,6 +108,63 @@ test("rejects added and missing files", () => {
   );
 });
 
+test("accepts a manifest.json written out again with the same JSON", () => {
+  // The listed 0.5.0 file came back this way: the release's own JSON, every
+  // array on its own lines, no final newline. Mozilla signed those bytes.
+  const files = releaseFiles({
+    "manifest.json": [
+      "{",
+      `  "version": "${VERSION}",`,
+      '  "background": {',
+      '    "scripts": ["dist/background.js"]',
+      "  },",
+      '  "permissions": ["activeTab", "tabs"],',
+      `  "browser_specific_settings": { "gecko": { "id": "${FIREFOX_ADDON_ID}" } }`,
+      "}",
+      "",
+    ].join("\n"),
+  });
+  const rewritten = {
+    ...files,
+    "manifest.json": JSON.stringify(JSON.parse(files["manifest.json"]), null, 2),
+  };
+  assert.notEqual(rewritten["manifest.json"], files["manifest.json"]);
+
+  const result = verifySignedFirefox({
+    xpi: signed(rewritten),
+    zip: archive(files),
+    version: VERSION,
+  });
+  assert.equal(result.files, 3);
+});
+
+test("rejects a rewritten manifest.json that says something else", () => {
+  const files = releaseFiles();
+  const manifest = JSON.parse(files["manifest.json"]);
+  for (const changed of [
+    { ...manifest, permissions: ["<all_urls>"] },
+    { ...manifest, version: "0.5.1" },
+  ]) {
+    assert.throws(
+      () => verifySignedFirefox({
+        xpi: signed({ ...files, "manifest.json": JSON.stringify(changed, null, 2) }),
+        zip: archive(files),
+        version: VERSION,
+      }),
+      /differs from the release ZIP in manifest\.json/,
+    );
+  }
+  // Only the manifest may come back rewritten; any other file must match.
+  assert.throws(
+    () => verifySignedFirefox({
+      xpi: signed({ ...files, "dist/background.js": "console.log('background');\n" }),
+      zip: archive(files),
+      version: VERSION,
+    }),
+    /differs from the release ZIP in dist\/background\.js/,
+  );
+});
+
 test("rejects a signed manifest that does not match the files", () => {
   const files = releaseFiles();
   const xpi = signed(files, {
@@ -109,6 +173,33 @@ test("rejects a signed manifest that does not match the files", () => {
   assert.throws(
     () => verifySignedFirefox({ xpi, zip: archive(files), version: VERSION }),
     /digest does not match dist\/background\.js/,
+  );
+});
+
+test("holds the COSE files the JAR manifest lists to their digests", () => {
+  const files = releaseFiles();
+  assert.throws(
+    () => verifySignedFirefox({
+      xpi: signed(files, { "META-INF/cose.sig": "swapped" }),
+      zip: archive(files),
+      version: VERSION,
+    }),
+    /digest does not match META-INF\/cose\.sig/,
+  );
+  const cose = { "META-INF/cose.manifest": "Manifest-Version: 1.0\n" };
+  assert.throws(
+    () => verifySignedFirefox({
+      xpi: signed(files, {
+        "META-INF/manifest.mf": jarManifest({
+          ...files,
+          ...cose,
+          "META-INF/cose.extra": "x",
+        }),
+      }),
+      zip: archive(files),
+      version: VERSION,
+    }),
+    /lists a file the XPI lacks: META-INF\/cose\.extra/,
   );
 });
 

@@ -309,9 +309,12 @@ release's own Firefox package before it is attached.
    ```
 
    The check requires every file of the release ZIP in the `.xpi` byte for
-   byte, only Mozilla's `META-INF` signature files in addition, a signed JAR
-   manifest whose SHA-256 digests match every file, the release version, and a
-   signing certificate issued to `info@conus.vision`. It writes
+   byte, except `manifest.json`, which must be the same JSON: the file Firefox
+   Add-ons signs can carry it written out again, as `0.5.0`'s did. It also
+   requires only Mozilla's `META-INF` signature files in addition, a signed JAR
+   manifest whose SHA-256 digests match every file it lists, COSE files
+   included, the release version, and a signing certificate issued to
+   `info@conus.vision`. It writes
    `pin-op-firefox-X.Y.Z.xpi.sha256`. Firefox verifies Mozilla's signature
    itself when it installs the file.
 3. Attach both files to the draft before publishing; a published release is
