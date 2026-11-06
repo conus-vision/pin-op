@@ -22,15 +22,24 @@ const OPTIONAL_SIGNATURE_FILES = Object.freeze([
 ]);
 
 /**
+ * The file Firefox Add-ons signs can carry `manifest.json` written out again:
+ * the listed 0.5.0 file holds the release's own JSON with every array on its
+ * own lines and no final newline. Mozilla signs those bytes, so the manifest
+ * is held to meaning, not spelling.
+ */
+const REWRITTEN_AS_JSON = new Set(["manifest.json"]);
+
+/**
  * Checks that a Mozilla-signed `.xpi` downloaded from Firefox Add-ons is the
  * release's own Firefox package and nothing else.
  *
  * Firefox verifies Mozilla's signature itself when it installs the file; this
  * check is what the release adds on top of that. Every file of the unsigned
- * release ZIP must be in the XPI byte for byte, the XPI may add only Mozilla's
- * signature files, the signed JAR manifest must list the SHA-256 of every file
- * exactly, and the manifest and signing certificate must name this add-on and
- * the release version.
+ * release ZIP must be in the XPI byte for byte -- `manifest.json` as the same
+ * JSON -- the XPI may add only Mozilla's signature files, the signed JAR
+ * manifest must list the SHA-256 of every file it carries exactly, and the
+ * manifest and signing certificate must name this add-on and the release
+ * version.
  */
 export function verifySignedFirefox({ xpi, zip, version }) {
   const signed = readEntries(xpi, "XPI");
@@ -56,24 +65,33 @@ export function verifySignedFirefox({ xpi, zip, version }) {
     if (!signedBytes) {
       throw new Error(`XPI is missing a file of the release ZIP: ${name}`);
     }
-    if (!signedBytes.equals(bytes)) {
+    if (
+      !signedBytes.equals(bytes) &&
+      !(REWRITTEN_AS_JSON.has(name) && sameJson(signedBytes, bytes))
+    ) {
       throw new Error(`XPI differs from the release ZIP in ${name}`);
     }
   }
 
+  // The signature covers the files as the XPI carries them.
   const listed = jarManifestDigests(signed.get("META-INF/manifest.mf"));
-  for (const [name, bytes] of unsigned) {
+  for (const name of unsigned.keys()) {
     const digest = listed.get(name);
     if (!digest) {
       throw new Error(`Signed manifest does not cover ${name}`);
     }
-    if (digest !== createHash("sha256").update(bytes).digest("base64")) {
+    if (digest !== createHash("sha256").update(signed.get(name)).digest("base64")) {
       throw new Error(`Signed manifest digest does not match ${name}`);
     }
   }
-  for (const name of listed.keys()) {
-    if (!unsigned.has(name)) {
+  // Mozilla's JAR manifest also covers the COSE manifest and signature.
+  for (const [name, digest] of listed) {
+    if (unsigned.has(name)) continue;
+    if (!OPTIONAL_SIGNATURE_FILES.includes(name) || !signed.has(name)) {
       throw new Error(`Signed manifest lists a file the XPI lacks: ${name}`);
+    }
+    if (digest !== createHash("sha256").update(signed.get(name)).digest("base64")) {
+      throw new Error(`Signed manifest digest does not match ${name}`);
     }
   }
 
@@ -118,6 +136,26 @@ function readEntries(bytes, label) {
     entries.set(name, entry.getData());
   }
   return entries;
+}
+
+/** The same JSON value, whatever whitespace or key order spells it. */
+function sameJson(left, right) {
+  try {
+    return canonicalJson(JSON.parse(left.toString("utf8"))) ===
+      canonicalJson(JSON.parse(right.toString("utf8")));
+  } catch {
+    return false;
+  }
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) =>
+      `${JSON.stringify(key)}:${canonicalJson(value[key])}`
+    ).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 /** Reads `Name:` and `SHA256-Digest:` pairs from a JAR manifest. */
